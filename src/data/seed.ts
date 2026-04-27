@@ -23,9 +23,37 @@ export async function deduplicateCategories(): Promise<void> {
   }
 }
 
+export async function deduplicateAccounts(): Promise<void> {
+  const all = await db.accounts.toArray()
+  const seen = new Map<string, string>() // "name|currency" -> id (first occurrence)
+  const toDelete: string[] = []
+  for (const acc of all) {
+    const key = `${acc.name}|${acc.currency}`
+    if (seen.has(key)) {
+      toDelete.push(acc.id)
+    } else {
+      seen.set(key, acc.id)
+    }
+  }
+  if (toDelete.length > 0) {
+    await db.accounts.bulkDelete(toDelete)
+  }
+}
+
+// 修補舊帳戶缺少 balance 欄位的問題
+export async function patchAccountBalance(): Promise<void> {
+  const all = await db.accounts.toArray()
+  const needsPatch = all.filter((acc) => (acc as { balance?: number }).balance === undefined)
+  for (const acc of needsPatch) {
+    await db.accounts.update(acc.id, { balance: 0 })
+  }
+}
+
 export async function seedIfEmpty(): Promise<void> {
-  // 先清除重複分類
+  // 先清除重複分類與帳戶，並修補舊資料缺少 balance 欄位
   await deduplicateCategories()
+  await deduplicateAccounts()
+  await patchAccountBalance()
 
   const [accountCount] = await Promise.all([
     db.accounts.count(),
@@ -68,6 +96,7 @@ export async function seedIfEmpty(): Promise<void> {
         name: '富邦證券',
         type: 'brokerage',
         currency: 'TWD',
+        balance: 0,
         note: '主要台股帳戶',
         createdAt: now(),
         updatedAt: now(),
@@ -77,6 +106,7 @@ export async function seedIfEmpty(): Promise<void> {
         name: '玉山銀行',
         type: 'bank',
         currency: 'TWD',
+        balance: 0,
         createdAt: now(),
         updatedAt: now(),
       },

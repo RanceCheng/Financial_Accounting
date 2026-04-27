@@ -1,8 +1,9 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/data/db'
-import { InvestmentTransaction } from '@/data/types'
-import { investmentTxRepo } from '@/data/repositories'
+import { InvestmentTransaction, AssetLot } from '@/data/types'
+import { investmentTxRepo, assetRepo, accountRepo } from '@/data/repositories'
+import { v4 as uuidv4 } from 'uuid'
 import { InvestmentTransactionSchema, InvestmentTransactionInput } from '@/data/schemas'
 import {
   CURRENCIES,
@@ -11,13 +12,20 @@ import {
   ASSET_TYPE_LABELS,
   MARKET_LABELS,
 } from '@/lib/constants'
-import { formatDate, formatNumber } from '@/lib/formatters'
+import { formatDatetime, formatNumber, formatCurrency } from '@/lib/formatters'
 import { Modal } from '@/components/common/Modal'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { SortTh } from '@/components/common/SortTh'
+import { useSortable, sortByKey } from '@/lib/sorting'
 import { Plus, Edit2, Trash2, Filter } from 'lucide-react'
 
+const toDatetimeLocal = (d: Date): string => {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 const emptyForm = (): InvestmentTransactionInput => ({
-  date: new Date().toISOString().slice(0, 10),
+  date: toDatetimeLocal(new Date()),
   assetId: '',
   accountId: '',
   txType: 'buy',
@@ -60,7 +68,38 @@ const TX_TYPE_BADGE_CLASS: Record<string, string> = {
   withdrawal: 'badge-withdrawal',
 }
 
-export function TransactionList() {
+function calcLotsStats(lots: AssetLot[]): { quantity: number | undefined; buyPrice: number } {
+  const totalQty = lots.reduce((s, l) => s + (l.quantity ?? 0), 0)
+  const withBoth = lots.filter(l => l.quantity != null && l.quantity > 0 && l.buyPrice != null)
+  const weightedSum = withBoth.reduce((s, l) => s + l.buyPrice! * l.quantity!, 0)
+  const qtyForWA = withBoth.reduce((s, l) => s + l.quantity!, 0)
+  return {
+    quantity: totalQty > 0 ? totalQty : undefined,
+    buyPrice: qtyForWA > 0 ? weightedSum / qtyForWA : 0,
+  }
+}
+
+function calcNetAmount(tx: InvestmentTransaction) {
+  const gross = tx.quantity * tx.price
+  if (tx.txType === 'buy' || tx.txType === 'deposit') {
+    return -(gross + tx.fee + tx.tax)
+  } else if (tx.txType === 'sell' || tx.txType === 'dividend' || tx.txType === 'withdrawal') {
+    return gross - tx.fee - tx.tax
+  }
+  return -(tx.fee + tx.tax)
+}
+
+export interface TxFilters {
+  dateFrom: string
+  dateTo: string
+  currency: string
+  market: string
+  assetType: string
+  accountId: string
+  keyword: string
+}
+
+export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxFilters) => void }) {
   const transactions = useLiveQuery(() => db.investmentTransactions.orderBy('date').reverse().toArray(), []) ?? []
   const assets = useLiveQuery(() => db.assets.toArray(), []) ?? []
   const accounts = useLiveQuery(() => db.accounts.toArray(), []) ?? []
@@ -73,13 +112,20 @@ export function TransactionList() {
   const [filters, setFilters] = useState<Filters>(emptyFilters())
   const [showFilters, setShowFilters] = useState(false)
 
+  // 篩選條件變動時通知父層（HoldingStats 同步用）
+  useEffect(() => {
+    onFiltersChange?.(filters)
+  }, [filters, onFiltersChange])
+
   const assetMap = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets])
   const accountMap = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
 
+  const { sortKey, sortDir, handleSort } = useSortable('date', 'desc')
+
   const filtered = useMemo(() => {
     return transactions.filter((tx) => {
-      if (filters.dateFrom && tx.date < filters.dateFrom) return false
-      if (filters.dateTo && tx.date > filters.dateTo) return false
+      if (filters.dateFrom && tx.date.slice(0, 10) < filters.dateFrom) return false
+      if (filters.dateTo && tx.date.slice(0, 10) > filters.dateTo) return false
       if (filters.currency && tx.currency !== filters.currency) return false
       if (filters.accountId && tx.accountId !== filters.accountId) return false
       const asset = assetMap.get(tx.assetId)
@@ -96,6 +142,18 @@ export function TransactionList() {
     })
   }, [transactions, filters, assetMap])
 
+  const sorted = useMemo(() => sortByKey(filtered, sortKey, sortDir, (tx, key) => {
+    switch (key) {
+      case 'date': return tx.date
+      case 'assetName': return assetMap.get(tx.assetId)?.name ?? ''
+      case 'txType': return INVESTMENT_TX_TYPE_LABELS[tx.txType]
+      case 'quantity': return tx.quantity
+      case 'price': return tx.price
+      case 'net': return calcNetAmount(tx)
+      default: return ''
+    }
+  }), [filtered, sortKey, sortDir, assetMap])
+
   const openAdd = () => {
     setEditItem(null)
     setForm(emptyForm())
@@ -106,7 +164,7 @@ export function TransactionList() {
   const openEdit = (item: InvestmentTransaction) => {
     setEditItem(item)
     setForm({
-      date: item.date,
+      date: item.date.length === 10 ? `${item.date}T00:00:00` : item.date.slice(0, 19),
       assetId: item.assetId,
       accountId: item.accountId,
       txType: item.txType,
@@ -123,10 +181,12 @@ export function TransactionList() {
   }
 
   const handleCurrencyChange = (currency: InvestmentTransactionInput['currency']) => {
+    const currentAccount = accounts.find(a => a.id === form.accountId)
     setForm((prev) => ({
       ...prev,
       currency,
       fxRateToBase: currency === 'TWD' ? 1 : prev.fxRateToBase,
+      accountId: currentAccount?.currency === currency ? prev.accountId : '',
     }))
   }
 
@@ -138,10 +198,113 @@ export function TransactionList() {
       setErrors(errs)
       return
     }
+    if ((form.txType === 'buy' || form.txType === 'sell') && (form.quantity ?? 0) <= 0) {
+      setErrors({ quantity: '買入／賣出數量不得為 0' })
+      return
+    }
     if (editItem) {
       await investmentTxRepo.update(editItem.id, form)
     } else {
+      // 該幣別無對應帳戶時阻止新增
+      const matchedAccounts = accounts.filter(a => a.currency === form.currency)
+      if (matchedAccounts.length === 0) {
+        setErrors({ accountId: `請先在帳戶管理新增 ${form.currency} 帳戶` })
+        return
+      }
       await investmentTxRepo.add(form)
+      // 買入/賣出：同步更新帳戶餘額
+      if (form.accountId && (form.txType === 'buy' || form.txType === 'sell')) {
+        const account = accounts.find(a => a.id === form.accountId)
+        if (account) {
+          // 將交易金額（含手續費、稅費）換算為帳戶幣別
+          // fxRateToBase = 1 TWD = X 交易幣別 → 交易幣別 to 帳戶幣別需透過 TWD 橋接
+          // 若帳戶幣別 = 交易幣別，直接使用；否則透過 fxRateToBase 換算
+          let delta = 0
+          const gross = form.quantity * form.price
+          const feeTax = form.fee + form.tax
+          if (account.currency === form.currency) {
+            // 同幣別：直接加減
+            delta = form.txType === 'buy' ? -(gross + feeTax) : (gross - feeTax)
+          } else if (account.currency === 'TWD') {
+            // 帳戶為 TWD：透過 fxRateToBase 換算（fxRateToBase = 1 TWD 兌 X 外幣，即外幣/TWD）
+            // 所以 1 外幣 = 1/fxRateToBase TWD
+            const rate = form.fxRateToBase > 0 ? 1 / form.fxRateToBase : 1
+            delta = form.txType === 'buy' ? -(gross + feeTax) * rate : (gross - feeTax) * rate
+          } else {
+            // 其他幣別組合：以 TWD 換算後再換回帳戶幣別（暫不處理，不更新）
+            delta = 0
+          }
+          if (delta !== 0) {
+            await accountRepo.update(account.id, { balance: (account.balance ?? 0) + delta })
+          }
+        }
+      }
+      // 買入：自動在資產管理新增批次；賣出：FIFO 扣除批次
+      if (form.assetId && (form.txType === 'buy' || form.txType === 'sell')) {
+        const asset = assets.find(a => a.id === form.assetId)
+        if (asset) {
+          if (form.txType === 'buy') {
+            const now = new Date()
+            const buyDate = form.date
+              ? new Date(form.date).toISOString()
+              : now.toISOString()
+            const bd = new Date(buyDate)
+            const p = (n: number) => String(n).padStart(2, '0')
+            const buyDateLabel = `${bd.getFullYear()}-${p(bd.getMonth()+1)}-${p(bd.getDate())} ${p(bd.getHours())}:${p(bd.getMinutes())}`
+            const newLot: AssetLot = {
+              id: uuidv4(),
+              name: `${asset.name} ${buyDateLabel}`,
+              buyPrice: form.price,
+              buyDate,
+              quantity: form.quantity,
+            }
+            let existingLots = asset.lots ?? []
+            if (existingLots.length === 0 && (asset.quantity != null || (asset.buyPrice ?? 0) > 0)) {
+              // 將原有直接欄位轉為第一批
+              const firstLot: AssetLot = {
+                id: uuidv4(),
+                name: asset.name,
+                buyPrice: asset.buyPrice ?? 0,
+                buyDate: asset.createdAt,
+                quantity: asset.quantity,
+              }
+              existingLots = [firstLot]
+            }
+            const allLots = [...existingLots, newLot]
+            const { quantity, buyPrice } = calcLotsStats(allLots)
+            await assetRepo.update(asset.id, { lots: allLots, quantity, buyPrice })
+          } else {
+            // 賣出：FIFO，從最舊批次開始扣除
+            let existingLotsForSell = asset.lots ?? []
+            // 若無批次但有直接欄位數量，先轉為合成批次
+            if (existingLotsForSell.length === 0 && (asset.quantity ?? 0) > 0) {
+              existingLotsForSell = [{
+                id: uuidv4(),
+                name: asset.name,
+                buyPrice: asset.buyPrice ?? 0,
+                buyDate: asset.createdAt,
+                quantity: asset.quantity,
+              }]
+            }
+            const sortedLots = [...existingLotsForSell].sort((a, b) => a.buyDate.localeCompare(b.buyDate))
+            let remaining = form.quantity
+            const updatedLots: AssetLot[] = []
+            for (const lot of sortedLots) {
+              const lotQty = lot.quantity ?? 0
+              if (remaining <= 0) {
+                updatedLots.push(lot)
+              } else if (lotQty <= remaining) {
+                remaining -= lotQty
+              } else {
+                updatedLots.push({ ...lot, quantity: lotQty - remaining })
+                remaining = 0
+              }
+            }
+            const { quantity, buyPrice } = calcLotsStats(updatedLots)
+            await assetRepo.update(asset.id, { lots: updatedLots, quantity, buyPrice })
+          }
+        }
+      }
     }
     setModalOpen(false)
   }
@@ -151,16 +314,6 @@ export function TransactionList() {
       await investmentTxRepo.delete(deleteId)
       setDeleteId(null)
     }
-  }
-
-  const calcNetAmount = (tx: InvestmentTransaction) => {
-    const gross = tx.quantity * tx.price
-    if (tx.txType === 'buy' || tx.txType === 'deposit') {
-      return -(gross + tx.fee + tx.tax)
-    } else if (tx.txType === 'sell' || tx.txType === 'dividend' || tx.txType === 'withdrawal') {
-      return gross - tx.fee - tx.tax
-    }
-    return -(tx.fee + tx.tax)
   }
 
   return (
@@ -235,34 +388,34 @@ export function TransactionList() {
         <table className="table">
           <thead>
             <tr>
-              <th>日期</th>
-              <th>標的</th>
+              <SortTh label="日期" sortKey="date" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortTh label="標的" sortKey="assetName" current={sortKey} dir={sortDir} onSort={handleSort} />
               <th>市場/類型</th>
-              <th>交易類型</th>
-              <th>數量</th>
-              <th>單價</th>
+              <SortTh label="交易類型" sortKey="txType" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortTh label="數量" sortKey="quantity" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
+              <SortTh label="單價" sortKey="price" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
               <th>幣別</th>
               <th>手續費</th>
               <th>稅費</th>
-              <th>淨額</th>
+              <SortTh label="淨額" sortKey="net" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
               <th>帳戶</th>
               <th>備註</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 && (
+            {sorted.length === 0 && (
               <tr>
                 <td colSpan={13} className="text-center text-gray-400 py-8">無交易紀錄</td>
               </tr>
             )}
-            {filtered.map((tx) => {
+            {sorted.map((tx) => {
               const asset = assetMap.get(tx.assetId)
               const account = accountMap.get(tx.accountId)
               const net = calcNetAmount(tx)
               return (
                 <tr key={tx.id}>
-                  <td>{formatDate(tx.date)}</td>
+                  <td className="whitespace-nowrap">{formatDatetime(tx.date)}</td>
                   <td>
                     <div className="font-medium text-gray-900">{asset?.name ?? '-'}</div>
                     <div className="text-xs text-gray-400 font-mono">{asset?.ticker ?? '-'}</div>
@@ -281,7 +434,7 @@ export function TransactionList() {
                   <td>{tx.currency}</td>
                   <td className="text-right text-sm text-gray-500">{formatNumber(tx.fee, 2)}</td>
                   <td className="text-right text-sm text-gray-500">{formatNumber(tx.tax, 2)}</td>
-                  <td className={`text-right font-mono font-medium ${net >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                  <td className={`text-right font-mono font-medium ${net > 0 ? '!text-red-500' : net < 0 ? '!text-green-600' : ''}`}>
                     {formatNumber(net, 2)}
                   </td>
                   <td className="text-sm">{account?.name ?? '-'}</td>
@@ -308,7 +461,7 @@ export function TransactionList() {
         <div className="grid grid-cols-2 gap-4">
           <div className="form-group">
             <label className="label">日期 *</label>
-            <input type="date" className="input" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            <input type="datetime-local" step="1" className="input" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
           </div>
           <div className="form-group">
             <label className="label">交易類型 *</label>
@@ -325,30 +478,72 @@ export function TransactionList() {
             {errors.assetId && <span className="text-xs text-red-500">{errors.assetId}</span>}
           </div>
           <div className="form-group">
-            <label className="label">帳戶 *</label>
-            <select className="select" value={form.accountId} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
-              <option value="">請選擇</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-            {errors.accountId && <span className="text-xs text-red-500">{errors.accountId}</span>}
-          </div>
-          <div className="form-group">
-            <label className="label">數量</label>
-            <input type="number" min="0" step="1" className="input" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} />
-          </div>
-          <div className="form-group">
-            <label className="label">單價</label>
-            <input type="number" min="0" step="0.01" className="input" value={form.price} onChange={(e) => setForm({ ...form, price: Number(e.target.value) })} />
-          </div>
-          <div className="form-group">
             <label className="label">幣別</label>
             <select className="select" value={form.currency} onChange={(e) => handleCurrencyChange(e.target.value as InvestmentTransactionInput['currency'])}>
               {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div className="form-group">
+            <label className="label">帳戶 *</label>
+            {(() => {
+              const matchedAccounts = accounts.filter(a => a.currency === form.currency)
+              return (
+                <>
+                  <select
+                    className="select"
+                    value={form.accountId}
+                    onChange={(e) => setForm({ ...form, accountId: e.target.value })}
+                    disabled={matchedAccounts.length === 0}
+                  >
+                    <option value="">{matchedAccounts.length === 0 ? `無 ${form.currency} 帳戶` : '請選擇'}</option>
+                    {matchedAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                  {matchedAccounts.length === 0 && (
+                    <span className="text-xs text-red-500">請先在帳戶管理新增 {form.currency} 帳戶才能建立交易</span>
+                  )}
+                  {form.accountId && (() => {
+                    const selAcc = matchedAccounts.find(a => a.id === form.accountId)
+                    if (!selAcc) return null
+                    const bal = selAcc.balance ?? 0
+                    return (
+                      <span className={`text-xs ${bal < 0 ? 'text-green-600' : 'text-gray-500'}`}>
+                        現有資金：{formatCurrency(bal, selAcc.currency)}
+                      </span>
+                    )
+                  })()}
+                  {errors.accountId && <span className="text-xs text-red-500">{errors.accountId}</span>}
+                </>
+              )
+            })()}
+          </div>
+          <div className="form-group">
             <label className="label">匯率 (對 TWD)</label>
             <input type="number" min="0.0001" step="0.01" className="input" value={form.fxRateToBase} onChange={(e) => setForm({ ...form, fxRateToBase: Number(e.target.value) })} disabled={form.currency === 'TWD'} />
+          </div>
+          <div className="form-group">
+            <label className="label">數量</label>
+            <input type="number" min="0" step="1" className="input" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} />
+            {errors.quantity && <span className="text-xs text-red-500">{errors.quantity}</span>}
+          </div>
+          <div className="form-group">
+            <label className="label">單價</label>
+            <div className="flex gap-2 items-center">
+              <input type="number" min="0" step="0.01" className="input flex-1" value={form.price} onChange={(e) => setForm({ ...form, price: Number(e.target.value) })} />
+              {(() => {
+                const selAsset = form.assetId ? assets.find(a => a.id === form.assetId) : undefined
+                if (!selAsset || !selAsset.currentPrice) return null
+                return (
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm whitespace-nowrap"
+                    onClick={() => setForm(prev => ({ ...prev, price: selAsset.currentPrice! }))}
+                    title={`使用現價 ${selAsset.currentPrice}`}
+                  >
+                    現價 {selAsset.currentPrice}
+                  </button>
+                )
+              })()}
+            </div>
           </div>
           <div className="form-group">
             <label className="label">手續費</label>
@@ -361,6 +556,31 @@ export function TransactionList() {
           <div className="form-group col-span-2">
             <label className="label">備註</label>
             <input className="input" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+            {(() => {
+              const topNotes = [...transactions
+                .map(tx => tx.note?.trim())
+                .filter((n): n is string => !!n)
+                .reduce((map, n) => { map.set(n, (map.get(n) ?? 0) + 1); return map }, new Map<string, number>())
+                .entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([n]) => n)
+              if (topNotes.length === 0) return null
+              return (
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {topNotes.map(n => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setForm(prev => ({ ...prev, note: n }))}
+                      className="px-2 py-0.5 text-xs rounded border border-gray-300 bg-gray-50 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 text-gray-600 transition-colors"
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              )
+            })()}
           </div>
         </div>
         <div className="flex justify-end gap-3 mt-6">

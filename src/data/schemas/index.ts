@@ -18,16 +18,29 @@ export const AccountSchema = BaseEntitySchema.extend({
   name: z.string().min(1, '帳戶名稱必填'),
   type: z.enum(accountTypes as [string, ...string[]]),
   currency: z.enum(currencies as [string, ...string[]]),
+  balance: z.number().min(0, '現有資金不可為負數'),
   note: z.string().optional(),
+})
+
+const AssetLotSchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+  buyPrice: z.number().min(0).optional(),
+  buyDate: z.string(),
+  quantity: z.number().min(0).optional(),
 })
 
 export const AssetSchema = BaseEntitySchema.extend({
   name: z.string().min(1, '資產名稱必填'),
-  ticker: z.string().min(1, '代號必填'),
+  ticker: z.string(),
   assetType: z.enum(assetTypes as [string, ...string[]]),
   market: z.enum(markets as [string, ...string[]]),
   currency: z.enum(currencies as [string, ...string[]]),
+  quantity: z.number().min(0).optional(),
+  buyPrice: z.number().min(0).optional(),
+  currentPrice: z.number().min(0).optional(),
   note: z.string().optional(),
+  lots: z.array(AssetLotSchema).optional(),
 })
 
 export const InvestmentTransactionSchema = BaseEntitySchema.extend({

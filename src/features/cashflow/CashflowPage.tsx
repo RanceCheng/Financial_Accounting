@@ -17,6 +17,8 @@ import { ImportExportButtons } from '@/components/common/ImportExportButtons'
 import { Modal } from '@/components/common/Modal'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { StatCard } from '@/components/common/StatCard'
+import { SortTh } from '@/components/common/SortTh'
+import { useSortable, sortByKey } from '@/lib/sorting'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell
@@ -215,6 +217,45 @@ export function CashflowPage() {
     [records, selectedMonth]
   )
 
+  // Sort states
+  const { sortKey: mSortKey, sortDir: mSortDir, handleSort: handleMSort } = useSortable('yearMonth', 'desc')
+  const { sortKey: rSortKey, sortDir: rSortDir, handleSort: handleRSort } = useSortable('date', 'desc')
+  const { sortKey: pSortKey, sortDir: pSortDir, handleSort: handlePSort } = useSortable('category')
+
+  const sortedSummaries = useMemo(() => sortByKey(monthlySummaries, mSortKey, mSortDir, (s, key) => {
+    switch (key) {
+      case 'yearMonth': return s.yearMonth
+      case 'totalIncome': return s.totalIncome
+      case 'totalExpense': return s.totalExpense
+      case 'totalPlannedExpense': return s.totalPlannedExpense
+      case 'balance': return s.balance
+      case 'savingsRate': return s.savingsRate
+      default: return ''
+    }
+  }), [monthlySummaries, mSortKey, mSortDir])
+
+  const sortedRecords = useMemo(() => sortByKey(filteredRecords, rSortKey, rSortDir, (r, key) => {
+    switch (key) {
+      case 'date': return r.date
+      case 'type': return CASH_FLOW_TYPE_LABELS[r.type]
+      case 'category': return categoryMap.get(r.categoryId)?.name ?? ''
+      case 'amount': return r.amount
+      default: return ''
+    }
+  }), [filteredRecords, rSortKey, rSortDir, categoryMap])
+
+  const sortedPlans = useMemo(() => {
+    const monthPlans = plans.filter((p) => p.yearMonth === selectedMonth)
+    return sortByKey(monthPlans, pSortKey, pSortDir, (p, key) => {
+      switch (key) {
+        case 'yearMonth': return p.yearMonth
+        case 'category': return categoryMap.get(p.categoryId)?.name ?? ''
+        case 'plannedAmount': return p.plannedAmount
+        default: return ''
+      }
+    })
+  }, [plans, selectedMonth, pSortKey, pSortDir, categoryMap])
+
   const tabs: { id: MainTab; label: string }[] = [
     { id: 'monthly', label: '月度總覽' },
     { id: 'records', label: '收支紀錄' },
@@ -358,16 +399,16 @@ export function CashflowPage() {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>月份</th>
-                    <th className="text-right">收入</th>
-                    <th className="text-right">實際支出</th>
-                    <th className="text-right">預計支出</th>
-                    <th className="text-right">結餘</th>
-                    <th className="text-right">儲蓄率</th>
+                    <SortTh label="月份" sortKey="yearMonth" current={mSortKey} dir={mSortDir} onSort={handleMSort} />
+                    <SortTh label="收入" sortKey="totalIncome" current={mSortKey} dir={mSortDir} onSort={handleMSort} className="text-right" />
+                    <SortTh label="實際支出" sortKey="totalExpense" current={mSortKey} dir={mSortDir} onSort={handleMSort} className="text-right" />
+                    <SortTh label="預計支出" sortKey="totalPlannedExpense" current={mSortKey} dir={mSortDir} onSort={handleMSort} className="text-right" />
+                    <SortTh label="結餘" sortKey="balance" current={mSortKey} dir={mSortDir} onSort={handleMSort} className="text-right" />
+                    <SortTh label="儲蓄率" sortKey="savingsRate" current={mSortKey} dir={mSortDir} onSort={handleMSort} className="text-right" />
                   </tr>
                 </thead>
                 <tbody>
-                  {monthlySummaries.slice().reverse().map((s) => (
+                  {sortedSummaries.map((s) => (
                     <tr
                       key={s.yearMonth}
                       className={s.yearMonth === selectedMonth ? 'bg-blue-50' : ''}
@@ -408,20 +449,20 @@ export function CashflowPage() {
             <table className="table">
               <thead>
                 <tr>
-                  <th>日期</th>
+                  <SortTh label="日期" sortKey="date" current={rSortKey} dir={rSortDir} onSort={handleRSort} />
                   <th>類型</th>
-                  <th>分類</th>
-                  <th>金額</th>
+                  <SortTh label="分類" sortKey="category" current={rSortKey} dir={rSortDir} onSort={handleRSort} />
+                  <SortTh label="金額" sortKey="amount" current={rSortKey} dir={rSortDir} onSort={handleRSort} className="text-right" />
                   <th>幣別</th>
                   <th>備註</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredRecords.length === 0 && (
+                {sortedRecords.length === 0 && (
                   <tr><td colSpan={7} className="text-center text-gray-400 py-8">本月無紀錄</td></tr>
                 )}
-                {filteredRecords.map((r) => (
+                {sortedRecords.map((r) => (
                   <tr key={r.id}>
                     <td>{formatDate(r.date)}</td>
                     <td>
@@ -467,18 +508,16 @@ export function CashflowPage() {
             <table className="table">
               <thead>
                 <tr>
-                  <th>月份</th>
-                  <th>分類</th>
-                  <th>計畫金額</th>
+                  <SortTh label="月份" sortKey="yearMonth" current={pSortKey} dir={pSortDir} onSort={handlePSort} />
+                  <SortTh label="分類" sortKey="category" current={pSortKey} dir={pSortDir} onSort={handlePSort} />
+                  <SortTh label="計畫金額" sortKey="plannedAmount" current={pSortKey} dir={pSortDir} onSort={handlePSort} className="text-right" />
                   <th>幣別</th>
                   <th>備註</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {plans
-                  .filter((p) => p.yearMonth === selectedMonth)
-                  .map((p) => (
+                {sortedPlans.map((p) => (
                     <tr key={p.id}>
                       <td>{getMonthLabel(p.yearMonth)}</td>
                       <td>{categoryMap.get(p.categoryId)?.name ?? '-'}</td>
@@ -497,7 +536,7 @@ export function CashflowPage() {
                       </td>
                     </tr>
                   ))}
-                {plans.filter((p) => p.yearMonth === selectedMonth).length === 0 && (
+                {sortedPlans.length === 0 && (
                   <tr><td colSpan={6} className="text-center text-gray-400 py-8">本月無支出計畫</td></tr>
                 )}
               </tbody>

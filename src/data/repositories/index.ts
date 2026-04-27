@@ -8,6 +8,8 @@ import {
   MonthlyExpensePlan,
   Category,
   RebalanceTarget,
+  ExchangeRate,
+  AccountTransfer,
 } from '@/data/types'
 import {
   AccountInput,
@@ -173,5 +175,32 @@ export const rebalanceTargetRepo = {
   },
   delete: async (id: string) => {
     await db.rebalanceTargets.delete(id)
+  },
+}
+
+// ============================================================
+// ExchangeRate Repository
+// ============================================================
+
+export const exchangeRateRepo = {
+  get: (): Promise<ExchangeRate | undefined> => db.exchangeRates.get('current'),
+  save: async (rate: Omit<ExchangeRate, 'id'>): Promise<void> => {
+    await db.exchangeRates.put({ id: 'current', ...rate })
+  },
+}
+
+// ============================================================
+// AccountTransfer Repository
+// ============================================================
+
+export const accountTransferRepo = {
+  getAll: () => db.accountTransfers.toArray(),
+  add: async (input: Omit<AccountTransfer, 'id' | 'createdAt' | 'updatedAt'>): Promise<AccountTransfer> => {
+    const entity = newEntity(input) as AccountTransfer
+    await db.accountTransfers.add(entity)
+    return entity
+  },
+  delete: async (id: string) => {
+    await db.accountTransfers.delete(id)
   },
 }

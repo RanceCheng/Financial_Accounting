@@ -12,6 +12,8 @@ import { formatCurrency, formatPercent } from '@/lib/formatters'
 import { ImportExportButtons } from '@/components/common/ImportExportButtons'
 import { Modal } from '@/components/common/Modal'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { SortTh } from '@/components/common/SortTh'
+import { useSortable, sortByKey } from '@/lib/sorting'
 import { ASSET_TYPES, CURRENCIES, ASSET_TYPE_LABELS, CURRENCY_LABELS } from '@/lib/constants'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { Plus, Edit2, Trash2, Target, AlertCircle, CheckCircle2 } from 'lucide-react'
@@ -37,6 +39,18 @@ export function RebalancePage() {
   const [form, setForm] = useState<RebalanceTargetInput>(emptyTargetForm())
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [deleteId, setDeleteId] = useState<string | null>(null)
+
+  const { sortKey, sortDir, handleSort } = useSortable('label')
+
+  const sortedTargets = useMemo(() => sortByKey(rebalanceTargets, sortKey, sortDir, (t, key) => {
+    switch (key) {
+      case 'label': return t.label
+      case 'targetType': return t.targetType === 'assetType' ? '資產類型' : '幣別'
+      case 'targetPercent': return t.targetPercent
+      case 'tolerancePercent': return t.tolerancePercent
+      default: return ''
+    }
+  }), [rebalanceTargets, sortKey, sortDir])
 
   const allocationByType = useMemo(
     () => calcAllocationByAssetType(transactions, assets, rebalanceTargets),
@@ -232,16 +246,16 @@ export function RebalancePage() {
             <table className="table">
               <thead>
                 <tr>
-                  <th>標籤</th>
-                  <th>類型</th>
+                  <SortTh label="標籤" sortKey="label" current={sortKey} dir={sortDir} onSort={handleSort} />
+                  <SortTh label="類型" sortKey="targetType" current={sortKey} dir={sortDir} onSort={handleSort} />
                   <th>對應項目</th>
-                  <th>目標比例</th>
-                  <th>容忍偏差</th>
+                  <SortTh label="目標比例" sortKey="targetPercent" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
+                  <SortTh label="容忍偏差" sortKey="tolerancePercent" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {rebalanceTargets.map((t) => (
+                {sortedTargets.map((t) => (
                   <tr key={t.id}>
                     <td className="font-medium">{t.label}</td>
                     <td>{t.targetType === 'assetType' ? '資產類型' : '幣別'}</td>

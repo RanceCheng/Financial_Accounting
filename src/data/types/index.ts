@@ -25,6 +25,7 @@ export interface Account extends BaseEntity {
   name: string
   type: AccountType
   currency: Currency
+  balance: number
   note?: string
 }
 
@@ -32,13 +33,25 @@ export interface Account extends BaseEntity {
 // 資產（投資標的）
 // ============================================================
 
+export interface AssetLot {
+  id: string
+  name: string
+  buyPrice?: number
+  buyDate: string
+  quantity?: number
+}
+
 export interface Asset extends BaseEntity {
   name: string
   ticker: string
   assetType: AssetType
   market: Market
   currency: Currency
+  quantity?: number
+  buyPrice?: number
+  currentPrice?: number
   note?: string
+  lots?: AssetLot[]
 }
 
 // ============================================================
@@ -107,6 +120,37 @@ export interface RebalanceTarget extends BaseEntity {
 }
 
 // ============================================================
+// 帳戶轉帳
+// ============================================================
+
+export interface AccountTransfer extends BaseEntity {
+  date: string
+  fromAccountId: string
+  toAccountId: string
+  fromCurrency: Currency
+  toCurrency: Currency
+  fromAmount: number        // 轉出金額
+  toAmount: number          // 轉入金額
+  exchangeRate: number      // 1 轉出幣別 = X 轉入幣別
+  fee: number               // 手續費（以轉出幣別計）
+  fromBalanceAfter: number  // 轉出帳戶轉後餘額
+  toBalanceAfter: number    // 轉入帳戶轉後餘額
+  note?: string
+}
+
+// ============================================================
+// 匯率（快取單筆，id 固定為 'current'）
+// ============================================================
+
+export interface ExchangeRate {
+  id: string        // 'current'
+  updatedAt: string // 最後更新時間（ISO8601）
+  usdRate: number   // 1 TWD = X USD
+  jpyRate: number   // 1 TWD = X JPY
+  cnyRate: number   // 1 TWD = X CNY
+}
+
+// ============================================================
 // App Meta
 // ============================================================
 
@@ -130,6 +174,7 @@ export interface AppData {
   monthlyExpensePlans: MonthlyExpensePlan[]
   categories: Category[]
   rebalanceTargets: RebalanceTarget[]
+  accountTransfers?: AccountTransfer[]
 }
 
 // ============================================================

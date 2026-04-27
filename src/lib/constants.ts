@@ -10,7 +10,7 @@ export type Currency = (typeof CURRENCIES)[number]
 export const ASSET_TYPES = ['tw_stock', 'us_stock', 'jp_stock', 'cash', 'fund'] as const
 export type AssetType = (typeof ASSET_TYPES)[number]
 
-export const MARKETS = ['TW', 'US', 'JP', 'CN', 'CASH'] as const
+export const MARKETS = ['TW', 'US', 'JP', 'CN', 'CASH', 'OTHER'] as const
 export type Market = (typeof MARKETS)[number]
 
 export const ACCOUNT_TYPES = ['brokerage', 'bank', 'cash'] as const
@@ -47,6 +47,7 @@ export const MARKET_LABELS: Record<Market, string> = {
   JP: '日本',
   CN: '中國',
   CASH: '現金',
+  OTHER: '其他',
 }
 
 export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {

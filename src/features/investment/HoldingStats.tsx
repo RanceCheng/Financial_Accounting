@@ -25,9 +25,9 @@ export function HoldingStats({ txFilters }: { txFilters?: TxFilters }) {
     // 以即時匯率將任意幣別換算為 TWD
     const getFx = (currency: string): number => {
       if (!exchangeRate || currency === 'TWD') return 1
-      if (currency === 'USD' && exchangeRate.usdRate > 0) return 1 / exchangeRate.usdRate
-      if (currency === 'JPY' && exchangeRate.jpyRate > 0) return 1 / exchangeRate.jpyRate
-      if (currency === 'CNY' && exchangeRate.cnyRate > 0) return 1 / exchangeRate.cnyRate
+      if (currency === 'USD' && exchangeRate.usdRate > 0) return exchangeRate.usdRate
+      if (currency === 'JPY' && exchangeRate.jpyRate > 0) return exchangeRate.jpyRate
+      if (currency === 'CNY' && exchangeRate.cnyRate > 0) return exchangeRate.cnyRate
       return 1
     }
 
@@ -55,7 +55,8 @@ export function HoldingStats({ txFilters }: { txFilters?: TxFilters }) {
     let totalSellTWD = 0
 
     for (const tx of filteredTxs) {
-      const fx = getFx(tx.currency)
+      // 優先使用交易紀錄的成本匯率，無紀錄才 fallback 即時匯率
+      const fx = (tx.fxRateToBase > 0) ? tx.fxRateToBase : getFx(tx.currency)
       const netAmt = tx.quantity * tx.price * fx
       if (!basis.has(tx.assetId)) basis.set(tx.assetId, { qty: 0, cost: 0, pnl: 0 })
       const b = basis.get(tx.assetId)!
@@ -92,11 +93,15 @@ export function HoldingStats({ txFilters }: { txFilters?: TxFilters }) {
       totalBalanceTWD += (acc.balance ?? 0) * getFx(acc.currency)
     }
 
-    // 未實現損益：資產管理各資產 (現價 - 買入平均價格) * 數量 換算 TWD
+    // 未實現損益：現值用即時匯率，成本用加權平均成本匯率（a.fxRateToBase）
     let totalUnrealizedPnLTWD = 0
     for (const a of assets) {
       if (a.currentPrice == null || a.quantity == null) continue
-      totalUnrealizedPnLTWD += (a.currentPrice - (a.buyPrice ?? 0)) * a.quantity * getFx(a.currency)
+      const currentFx = getFx(a.currency)
+      const costFx = (a.fxRateToBase != null && a.fxRateToBase > 0) ? a.fxRateToBase : currentFx
+      totalUnrealizedPnLTWD +=
+        a.currentPrice * a.quantity * currentFx -
+        (a.buyPrice ?? 0) * a.quantity * costFx
     }
 
     return { totalCostTWD, totalSellTWD, totalRealizedPnL, activePositions, totalBalanceTWD, totalUnrealizedPnLTWD }
@@ -130,6 +135,7 @@ export function HoldingStats({ txFilters }: { txFilters?: TxFilters }) {
       <StatCard
         label="總投入金額 (TWD)"
         value={formatCurrency(stats.totalCostTWD, 'TWD')}
+        subValue="剩餘持倉成本基礎"
         icon={<DollarSign className="w-4 h-4" />}
       />
       <StatCard

@@ -26,6 +26,7 @@ const AssetLotSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   buyPrice: z.number().min(0).optional(),
+  fxRateToBase: z.number().positive().optional(),
   buyDate: z.string(),
   quantity: z.number().min(0).optional(),
 })
@@ -38,6 +39,7 @@ export const AssetSchema = BaseEntitySchema.extend({
   currency: z.enum(currencies as [string, ...string[]]),
   quantity: z.number().min(0).optional(),
   buyPrice: z.number().min(0).optional(),
+  fxRateToBase: z.number().positive().optional(),
   currentPrice: z.number().min(0).optional(),
   note: z.string().optional(),
   lots: z.array(AssetLotSchema).optional(),

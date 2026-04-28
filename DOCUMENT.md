@@ -277,6 +277,231 @@
 - **匯率儲存慣例**：`usdRate` 儲存「1 TWD = X USD」（約 0.031）；換算為「1 USD = X TWD」需取倒數
 - **資料初始化**：首次啟動呼叫 `seedIfEmpty()` 注入預設分類與示範資料
 
+---
+
+## 八、計算公式與邏輯說明（2026-04-28 驗證）
+
+> 本節說明投資紀錄表（HoldingStats）與資產再平衡表（RebalancePage）的完整計算邏輯，供人工核對。
+
+---
+
+### 8.1 匯率取得規則
+
+#### 即時匯率（`getFx`）
+用於現金帳戶換算、未實現損益現值換算、成本配置 fallback。
+
+```
+getFx(currency):
+  TWD            → 1
+  USD            → exchangeRate.usdRate   (1 USD = X TWD)
+  JPY            → exchangeRate.jpyRate
+  CNY            → exchangeRate.cnyRate
+  其他 / 無匯率  → 1
+```
+
+#### 交易成本匯率（`fx`）
+每筆交易優先使用當時記錄的 `tx.fxRateToBase`，無記錄才 fallback 即時匯率：
+
+```
+fx = tx.fxRateToBase > 0 ? tx.fxRateToBase : getFx(tx.currency)
+```
+
+#### 資產成本匯率（`costFx`）
+資產層級的加權平均成本匯率，由批次（lots）計算後儲存至 `asset.fxRateToBase`：
+
+```
+costFx = asset.fxRateToBase > 0 ? asset.fxRateToBase : getFx(asset.currency)
+```
+
+---
+
+### 8.2 投資紀錄表統計卡片（`HoldingStats.tsx`）
+
+> 全部數值受頁面篩選條件影響（現金帳戶與未實現損益**除外**）。
+
+#### 現金 (TWD)
+```
+totalBalanceTWD = Σ (acc.balance × getFx(acc.currency))
+```
+- 來源：所有帳戶（`accounts` 資料表）
+- 使用**即時匯率**
+
+---
+
+#### 持倉標的數
+```
+assetCount = assets.filter(a => a.market !== 'CASH' && a.assetType !== 'cash').length
+```
+- 排除現金類型資產，不受篩選條件影響
+
+---
+
+#### 總投入金額 (TWD)
+**語意**：篩選條件內，所有買入交易的**剩餘持倉成本基礎**（已扣除已賣出部分的成本）。
+
+```
+// 對每筆篩選後的交易，依 assetId 累積 basis:
+buy / deposit:
+  b.cost += qty × price × fx + (fee + tax) × fx
+
+sell / withdrawal:
+  costOfSold = (b.cost / b.qty) × qty_sold
+  b.cost -= costOfSold   ← 扣除已賣出的成本
+
+fee / tax:
+  b.cost += (fee + tax) × fx
+
+totalCostTWD = Σ b.cost (所有資產)
+```
+
+- `fx = tx.fxRateToBase > 0 ? tx.fxRateToBase : getFx(currency)`
+- ⚠️ **注意**：此值為「已買入但尚未賣出的成本基礎」，而非歷史累計買入總額。若所有持倉賣出，此值趨近 0。
+
+---
+
+#### 總賣出金額 (TWD)
+```
+sell / withdrawal / dividend:
+  totalSellTWD += qty × price × fx
+```
+- `fx = tx.fxRateToBase > 0 ? tx.fxRateToBase : getFx(currency)`
+- 包含：賣出、出金、股息收入
+
+---
+
+#### 已實現損益 (TWD)
+```
+sell / withdrawal:
+  b.pnl += (qty × price × fx) - (fee + tax) × fx - costOfSold
+
+dividend:
+  b.pnl += (qty × price × fx) - (fee + tax) × fx
+
+totalRealizedPnL = Σ b.pnl (所有資產)
+```
+- `costOfSold` = 加權平均成本 × 賣出數量
+- `fx = tx.fxRateToBase > 0 ? tx.fxRateToBase : getFx(currency)`
+- 正數（獲利）顯示紅色；負數（虧損）顯示綠色（台股慣例）
+
+---
+
+#### 未實現損益 (TWD)
+```
+totalUnrealizedPnLTWD = Σ (
+  currentPrice × qty × currentFx    ← 現值（即時匯率）
+  - buyPrice × qty × costFx          ← 成本（成本匯率）
+)
+```
+
+| 變數 | 來源 | 匯率 |
+|------|------|------|
+| `currentPrice` | `asset.currentPrice` | `currentFx = getFx(asset.currency)` 即時匯率 |
+| `buyPrice` | `asset.buyPrice`（加權平均買入價） | `costFx = asset.fxRateToBase` 成本匯率 |
+
+- 若 `asset.fxRateToBase` 未設定，costFx fallback 即時匯率
+- ⚠️ 兩者使用**不同匯率**才能正確反映匯率損益（現值用即時，成本用買入時匯率）
+
+---
+
+### 8.3 資產再平衡表配置計算（`services/index.ts`）
+
+---
+
+#### 成本配置（`calcAllocationByAssetType` / `calcAllocationByCurrency`）
+
+**計算基礎**：持倉資產的買入成本換算 TWD（**不含帳戶現金**）
+
+```
+per asset (qty > 0):
+  costFx = asset.fxRateToBase > 0 ? asset.fxRateToBase : getExFx(exchangeRate, currency)
+  cost_TWD = buyPrice × qty × costFx
+
+amountByType[assetType] += cost_TWD    // 依資產類型
+amountByCurrency[currency] += cost_TWD // 依幣別
+
+totalTWD = Σ amountByType / amountByCurrency
+```
+
+⚠️ **成本配置不含帳戶現金**，僅統計 `assets` 表中持倉數量 > 0 的資產。
+
+---
+
+#### 市值配置（`calcAllocationByAssetTypeMarketValue` / `calcAllocationByCurrencyMarketValue`）
+
+**計算基礎**：持倉資產現值 + 帳戶現金（均以即時匯率換算 TWD）
+
+```
+per asset (qty > 0 && currentPrice > 0):
+  mv_TWD = currentPrice × qty × getExFx(exchangeRate, currency)
+  amountByType[assetType] += mv_TWD
+
+// 依資產類型：帳戶現金統一加入 'cash' bucket
+per account:
+  amountByType['cash'] += balance × getExFx(exchangeRate, acc.currency)
+
+// 依幣別：帳戶現金按原始幣別分入對應 bucket
+per account:
+  amountByCurrency[acc.currency] += balance × getExFx(exchangeRate, acc.currency)
+
+totalTWD = Σ all buckets
+```
+
+⚠️ **市值配置含帳戶現金**，因此「依資產類型」視圖的現金 bucket 涵蓋所有幣別帳戶餘額。
+
+---
+
+#### AllocationItem 共通欄位計算
+
+| 欄位 | 公式 |
+|------|------|
+| `currentPercent` | `amt / totalTWD` |
+| `targetAmountTWD` | `targetPercent × totalTWD` |
+| `diffAmountTWD` | `targetAmountTWD - amt`（正 = 需買入，負 = 超額） |
+| `isWithinTolerance` | `|currentPercent - targetPercent| <= tolerancePercent` |
+
+---
+
+### 8.4 成本配置 vs 市值配置差異對照
+
+| 維度 | 成本配置 | 市值配置 |
+|------|---------|---------|
+| 價格基礎 | 買入均價（`asset.buyPrice`） | 目前現價（`asset.currentPrice`） |
+| 匯率 | 成本匯率（`asset.fxRateToBase`） | 即時匯率（`exchangeRate.*Rate`） |
+| 帳戶現金 | ❌ 不含 | ✅ 含（依幣別或統一歸入 cash） |
+| 篩選條件 | qty > 0 | qty > 0 且 currentPrice > 0 |
+
+---
+
+### 8.5 資產成本匯率（`asset.fxRateToBase`）計算與更新時機
+
+`asset.fxRateToBase` 為所有批次（lots）的**數量加權平均成本匯率**：
+
+```
+withFx = lots.filter(l => l.fxRateToBase > 0 && qty > 0)
+fxWeightedSum = Σ (lot.fxRateToBase × lot.quantity)
+fxQty = Σ lot.quantity
+
+asset.fxRateToBase = fxWeightedSum / fxQty
+```
+
+**自動更新時機**：
+1. 新增交易（買入）→ 建立新批次，重算並持久化
+2. 賣出交易 → 移除相應批次，重算並持久化
+3. 編輯批次 → 重算並持久化
+4. 刪除批次 → 重算並持久化
+5. 新增資產（無批次）→ 帶入當前即時匯率
+
+---
+
+### 8.6 已知設計限制（非 Bug）
+
+| 項目 | 說明 |
+|------|------|
+| 總投入金額語意 | 為剩餘持倉成本基礎，非歷史累計買入總額 |
+| 成本配置無現金 | 現金無「買入成本」概念，故不納入成本配置 |
+| 舊批次無成本匯率 | 匯入或手動建立的舊批次若無 `fxRateToBase`，顯示時 fallback 即時匯率（非買入時匯率） |
+| TWD 成本匯率 | 固定顯示 `1`，不受匯率變動影響 |
+
 
 > Version：0.2　　最後更新：2026-04-23
 

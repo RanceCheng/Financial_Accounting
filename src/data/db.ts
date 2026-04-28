@@ -54,6 +54,24 @@ export class FinancialDB extends Dexie {
       exchangeRates: 'id',
       accountTransfers: 'id, date, fromAccountId, toAccountId',
     })
+    // v4: 匯率儲存方向改為 "1 外幣 = X TWD"（舊格式為 "1 TWD = X 外幣"），遷移時將舊值取倒數
+    this.version(4).stores({
+      accounts: 'id, type, currency, name',
+      assets: 'id, assetType, market, currency, ticker, name',
+      investmentTransactions: 'id, date, assetId, accountId, txType, currency',
+      incomeExpenseRecords: 'id, date, type, categoryId, currency',
+      monthlyExpensePlans: 'id, yearMonth, categoryId',
+      categories: 'id, type, name',
+      rebalanceTargets: 'id, targetType, targetKey',
+      exchangeRates: 'id',
+      accountTransfers: 'id, date, fromAccountId, toAccountId',
+    }).upgrade(tx => {
+      return tx.table('exchangeRates').toCollection().modify((rate: { usdRate: number; jpyRate: number; cnyRate: number }) => {
+        if (rate.usdRate > 0) rate.usdRate = parseFloat((1 / rate.usdRate).toFixed(4))
+        if (rate.jpyRate > 0) rate.jpyRate = parseFloat((1 / rate.jpyRate).toFixed(4))
+        if (rate.cnyRate > 0) rate.cnyRate = parseFloat((1 / rate.cnyRate).toFixed(4))
+      })
+    })
   }
 }
 

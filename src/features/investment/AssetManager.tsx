@@ -178,14 +178,18 @@ async function fetchPrice(ticker: string, market: string, assetType?: string): P
 }
 
 // 從批次列表計算加權平均買入價格與數量總和
-function calcLotsStats(lots: AssetLot[]): { quantity: number | undefined; buyPrice: number } {
+function calcLotsStats(lots: AssetLot[]): { quantity: number | undefined; buyPrice: number; fxRateToBase: number | undefined } {
   const totalQty = lots.reduce((s, l) => s + (l.quantity ?? 0), 0)
   const withBoth = lots.filter(l => l.quantity != null && l.quantity > 0 && l.buyPrice != null)
   const weightedSum = withBoth.reduce((s, l) => s + l.buyPrice! * l.quantity!, 0)
   const qtyForWA = withBoth.reduce((s, l) => s + l.quantity!, 0)
+  const withFx = lots.filter(l => l.fxRateToBase != null && l.fxRateToBase > 0 && (l.quantity ?? 0) > 0)
+  const fxWeightedSum = withFx.reduce((s, l) => s + l.fxRateToBase! * (l.quantity ?? 0), 0)
+  const fxQty = withFx.reduce((s, l) => s + (l.quantity ?? 0), 0)
   return {
     quantity: totalQty > 0 ? totalQty : undefined,
     buyPrice: qtyForWA > 0 ? weightedSum / qtyForWA : 0,
+    fxRateToBase: fxQty > 0 ? parseFloat((fxWeightedSum / fxQty).toFixed(4)) : undefined,
   }
 }
 
@@ -208,7 +212,8 @@ const emptyForm = (): AssetInput => ({
 
 export function AssetManager() {
   const assets = useLiveQuery(() => db.assets.toArray(), []) ?? []
-  const { sortKey, sortDir, handleSort } = useSortable('name')
+  const exchangeRate = useLiveQuery(() => db.exchangeRates.get('current'), [])
+  const { sortKey, sortDir, handleSort } = useSortable('quantity', 'desc')
   const sorted = useMemo(() => sortByKey(assets, sortKey, sortDir, (a, key) => {
     switch (key) {
       case 'name': return a.name
@@ -255,14 +260,23 @@ export function AssetManager() {
   // Lot edit/delete state
   type LotEditTarget = { asset: Asset; lot: import('@/data/types').AssetLot }
   const [lotEditTarget, setLotEditTarget] = useState<LotEditTarget | null>(null)
-  const [lotForm, setLotForm] = useState({ name: '', buyPrice: '' as string, buyDate: '', quantity: '' as string })
+  const [lotForm, setLotForm] = useState({ name: '', buyPrice: '' as string, fxRateToBase: '' as string, buyDate: '', quantity: '' as string })
   const [lotDeleteTarget, setLotDeleteTarget] = useState<LotEditTarget | null>(null)
 
   const openLotEdit = (asset: Asset, lot: import('@/data/types').AssetLot) => {
     setLotEditTarget({ asset, lot })
+    const getFxStr = () => {
+      if (lot.fxRateToBase != null && lot.fxRateToBase > 0) return String(lot.fxRateToBase)
+      if (asset.currency === 'TWD') return '1'
+      if (asset.currency === 'USD' && exchangeRate?.usdRate) return String(exchangeRate.usdRate)
+      if (asset.currency === 'JPY' && exchangeRate?.jpyRate) return String(exchangeRate.jpyRate)
+      if (asset.currency === 'CNY' && exchangeRate?.cnyRate) return String(exchangeRate.cnyRate)
+      return ''
+    }
     setLotForm({
       name: lot.name,
       buyPrice: lot.buyPrice != null ? String(lot.buyPrice) : '',
+      fxRateToBase: getFxStr(),
       buyDate: lot.buyDate.slice(0, 16),
       quantity: lot.quantity != null ? String(lot.quantity) : '',
     })
@@ -271,19 +285,28 @@ export function AssetManager() {
   const handleLotSave = async () => {
     if (!lotEditTarget) return
     const { asset, lot } = lotEditTarget
+    const getFallbackFx = () => {
+      if (asset.currency === 'TWD') return 1
+      if (asset.currency === 'USD' && exchangeRate?.usdRate) return exchangeRate.usdRate
+      if (asset.currency === 'JPY' && exchangeRate?.jpyRate) return exchangeRate.jpyRate
+      if (asset.currency === 'CNY' && exchangeRate?.cnyRate) return exchangeRate.cnyRate
+      return undefined
+    }
     const updatedLots = (asset.lots ?? []).map(l =>
       l.id === lot.id
         ? {
             ...l,
             name: lotForm.name,
             buyPrice: lotForm.buyPrice !== '' ? Number(lotForm.buyPrice) : 0,
+            fxRateToBase: lotForm.fxRateToBase !== '' ? Number(lotForm.fxRateToBase) : (l.fxRateToBase ?? getFallbackFx()),
             buyDate: lotForm.buyDate ? new Date(lotForm.buyDate).toISOString() : l.buyDate,
             quantity: lotForm.quantity !== '' ? Number(lotForm.quantity) : undefined,
           }
         : l
     )
-    const { quantity, buyPrice } = calcLotsStats(updatedLots)
-    await assetRepo.update(asset.id, { lots: updatedLots, quantity, buyPrice })
+    const { quantity, buyPrice, fxRateToBase: calcedFxRate } = calcLotsStats(updatedLots)
+    const fxRateToBase = calcedFxRate ?? getFallbackFx()
+    await assetRepo.update(asset.id, { lots: updatedLots, quantity, buyPrice, fxRateToBase })
     setLotEditTarget(null)
   }
 
@@ -291,8 +314,16 @@ export function AssetManager() {
     if (!lotDeleteTarget) return
     const { asset, lot } = lotDeleteTarget
     const updatedLots = (asset.lots ?? []).filter(l => l.id !== lot.id)
-    const { quantity, buyPrice } = calcLotsStats(updatedLots)
-    await assetRepo.update(asset.id, { lots: updatedLots, quantity, buyPrice })
+    const { quantity, buyPrice, fxRateToBase: calcedFxRate } = calcLotsStats(updatedLots)
+    const getFallbackFx = () => {
+      if (asset.currency === 'TWD') return 1
+      if (asset.currency === 'USD' && exchangeRate?.usdRate) return exchangeRate.usdRate
+      if (asset.currency === 'JPY' && exchangeRate?.jpyRate) return exchangeRate.jpyRate
+      if (asset.currency === 'CNY' && exchangeRate?.cnyRate) return exchangeRate.cnyRate
+      return undefined
+    }
+    const fxRateToBase = calcedFxRate ?? getFallbackFx()
+    await assetRepo.update(asset.id, { lots: updatedLots, quantity, buyPrice, fxRateToBase })
     setLotDeleteTarget(null)
   }
 
@@ -448,15 +479,20 @@ export function AssetManager() {
             existingLots = [firstLot]
           }
           const allLots = [...existingLots, newLot]
-          const { quantity, buyPrice } = calcLotsStats(allLots)
-          await assetRepo.update(tickerMatch.id, { lots: allLots, quantity, buyPrice })
+          const { quantity, buyPrice, fxRateToBase } = calcLotsStats(allLots)
+          await assetRepo.update(tickerMatch.id, { lots: allLots, quantity, buyPrice, fxRateToBase })
         } else {
           // 代號相同但類型／市場／幣別不符 → 提示錯誤
           setErrors({ ticker: `代號「${form.ticker}」已存在，但類型、市場或幣別不符，請確認` })
           return
         }
       } else {
-        await assetRepo.add(form)
+        const fx = form.currency === 'TWD' ? 1
+          : form.currency === 'USD' && exchangeRate?.usdRate ? exchangeRate.usdRate
+          : form.currency === 'JPY' && exchangeRate?.jpyRate ? exchangeRate.jpyRate
+          : form.currency === 'CNY' && exchangeRate?.cnyRate ? exchangeRate.cnyRate
+          : undefined
+        await assetRepo.add({ ...form, fxRateToBase: fx } as Parameters<typeof assetRepo.add>[0])
       }
     }
     setModalOpen(false)
@@ -495,6 +531,7 @@ export function AssetManager() {
               <SortTh label="市場" sortKey="market" current={sortKey} dir={sortDir} onSort={handleSort} />
               <SortTh label="買入平均價格" sortKey="buyPrice" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
               <SortTh label="現價" sortKey="currentPrice" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
+              <th className="text-right">成本匯率</th>
               <SortTh label="數量" sortKey="quantity" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
               <SortTh label="未實現損益" sortKey="unrealizedPnl" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
               <SortTh label="幣別" sortKey="currency" current={sortKey} dir={sortDir} onSort={handleSort} />
@@ -505,7 +542,7 @@ export function AssetManager() {
           <tbody>
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={11} className="text-center text-gray-400 py-8">
+                <td colSpan={12} className="text-center text-gray-400 py-8">
                   尚無資產，請先新增
                 </td>
               </tr>
@@ -535,6 +572,17 @@ export function AssetManager() {
                   <td>{MARKET_LABELS[a.market]}</td>
                   <td className="text-right font-mono">{a.buyPrice != null ? a.buyPrice.toLocaleString() : '-'}</td>
                   <td className="text-right font-mono">{a.currentPrice != null ? a.currentPrice.toLocaleString() : '-'}</td>
+                  <td className="text-right font-mono text-gray-600">
+                    {(() => {
+                      if (a.currency === 'TWD') return '1'
+                      if (a.fxRateToBase != null && a.fxRateToBase > 0) return a.fxRateToBase.toFixed(4)
+                      // fallback: 目前匯率
+                      if (a.currency === 'USD' && exchangeRate?.usdRate) return exchangeRate.usdRate.toFixed(4)
+                      if (a.currency === 'JPY' && exchangeRate?.jpyRate) return exchangeRate.jpyRate.toFixed(4)
+                      if (a.currency === 'CNY' && exchangeRate?.cnyRate) return exchangeRate.cnyRate.toFixed(4)
+                      return '-'
+                    })()}
+                  </td>
                   <td className="text-right font-mono">{a.quantity != null ? a.quantity.toLocaleString() : '-'}</td>
                   <td className="text-right font-mono">
                     {(() => {
@@ -565,14 +613,15 @@ export function AssetManager() {
                     <tr className="bg-gray-50">
                       <td colSpan={10} className="pt-1 pb-0 px-0">
                         <div className="pl-10 pr-4 flex items-center gap-4 text-xs text-gray-400 border-b border-gray-200 pb-1">
-                          <span className="w-4"></span>
-                          <span className="min-w-[8rem]">名稱</span>
-                          <span className="w-24">代號</span>
-                          <span className="w-14">市場</span>
-                          <span className="w-28 text-right">買入平均價格</span>
-                          <span className="w-28">買入日期</span>
-                          <span className="w-20 text-right">數量</span>
-                          <span className="w-16"></span>
+                          <span className="w-4 shrink-0"></span>
+                          <span className="w-52 shrink-0">名稱</span>
+                          <span className="w-20 shrink-0">代號</span>
+                          <span className="w-14 shrink-0">市場</span>
+                          <span className="w-28 shrink-0 text-right">買入平均價格</span>
+                          <span className="w-20 shrink-0 text-right">成本匯率</span>
+                          <span className="w-36 shrink-0">買入日期</span>
+                          <span className="w-20 shrink-0 text-right">數量</span>
+                          <span className="w-16 shrink-0"></span>
                         </div>
                       </td>
                     </tr>
@@ -580,14 +629,25 @@ export function AssetManager() {
                       <tr key={lot.id} className="bg-gray-50 hover:bg-gray-100/60">
                         <td colSpan={10} className="py-1 px-0">
                           <div className="pl-10 pr-4 flex items-center gap-4 text-sm">
-                            <span className="text-gray-300 w-4 text-xs text-right tabular-nums">{i + 1}</span>
-                            <span className="min-w-[8rem] font-medium">{lot.name}</span>
-                            <span className="w-24 font-mono text-xs text-gray-500">{a.ticker}</span>
-                            <span className="w-14 text-gray-600">{MARKET_LABELS[a.market]}</span>
-                            <span className="w-28 text-right font-mono">{lot.buyPrice != null ? lot.buyPrice.toLocaleString() : '-'}</span>
-                            <span className="w-36 text-gray-500">{formatLotDate(lot.buyDate)}</span>
-                            <span className="w-20 text-right font-mono">{lot.quantity != null ? lot.quantity.toLocaleString() : '-'}</span>
-                            <div className="w-16 flex gap-1">
+                            <span className="text-gray-300 w-4 shrink-0 text-xs text-right tabular-nums">{i + 1}</span>
+                            <span className="w-52 shrink-0 font-medium truncate" title={lot.name}>{lot.name}</span>
+                            <span className="w-20 shrink-0 font-mono text-xs text-gray-500">{a.ticker}</span>
+                            <span className="w-14 shrink-0 text-gray-600">{MARKET_LABELS[a.market]}</span>
+                            <span className="w-28 shrink-0 text-right font-mono">{lot.buyPrice != null ? lot.buyPrice.toLocaleString() : '-'}</span>
+                            <span className="w-20 shrink-0 text-right font-mono text-gray-600">
+                              {(() => {
+                                if (a.currency === 'TWD') return '1'
+                                if (lot.fxRateToBase != null && lot.fxRateToBase > 0) return lot.fxRateToBase.toFixed(4)
+                                // fallback: 目前匯率
+                                if (a.currency === 'USD' && exchangeRate?.usdRate) return exchangeRate.usdRate.toFixed(4)
+                                if (a.currency === 'JPY' && exchangeRate?.jpyRate) return exchangeRate.jpyRate.toFixed(4)
+                                if (a.currency === 'CNY' && exchangeRate?.cnyRate) return exchangeRate.cnyRate.toFixed(4)
+                                return '-'
+                              })()}
+                            </span>
+                            <span className="w-36 shrink-0 text-gray-500">{formatLotDate(lot.buyDate)}</span>
+                            <span className="w-20 shrink-0 text-right font-mono">{lot.quantity != null ? lot.quantity.toLocaleString() : '-'}</span>
+                            <div className="w-16 shrink-0 flex gap-1">
                               <button onClick={() => openLotEdit(a, lot)} className="p-1 rounded hover:bg-gray-200 text-gray-500" title="編輯批次">
                                 <Edit2 className="w-3 h-3" />
                               </button>
@@ -677,6 +737,11 @@ export function AssetManager() {
           <div className="form-group">
             <label className="label">買入平均價格</label>
             <input className="input" type="number" min="0" step="any" value={lotForm.buyPrice} onChange={(e) => setLotForm({ ...lotForm, buyPrice: e.target.value })} placeholder="選填" />
+          </div>
+          <div className="form-group">
+            <label className="label">成本匯率</label>
+            <input className="input" type="number" min="0" step="0.0001" value={lotForm.fxRateToBase} onChange={(e) => setLotForm({ ...lotForm, fxRateToBase: e.target.value })} placeholder={lotEditTarget?.asset.currency === 'TWD' ? '1' : '選填'} disabled={lotEditTarget?.asset.currency === 'TWD'} />
+            <span className="text-xs text-gray-400">1 {lotEditTarget?.asset.currency ?? ''} = X TWD</span>
           </div>
           <div className="form-group">
             <label className="label">數量</label>

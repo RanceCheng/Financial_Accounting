@@ -9,6 +9,7 @@ import {
   IncomeExpenseRecord,
   MonthlyExpensePlan,
   Category,
+  ExchangeRate,
 } from '@/data/types'
 import { ASSET_TYPE_LABELS, CURRENCY_LABELS, AssetType, Currency } from '@/lib/constants'
 import { getMonthKey } from '@/lib/formatters'
@@ -83,16 +84,19 @@ export function calcTotalAssetTWD(
 export function calcAllocationByAssetType(
   transactions: InvestmentTransaction[],
   assets: Asset[],
-  rebalanceTargets: RebalanceTarget[]
+  rebalanceTargets: RebalanceTarget[],
+  exchangeRate?: ExchangeRate
 ): AllocationItem[] {
-  const holdings = calcAllHoldings(transactions, assets)
   const amountByType: Record<string, number> = {}
 
-  for (let i = 0; i < assets.length; i++) {
-    const asset = assets[i]
-    const holding = holdings[i]
-    const type = asset.assetType
-    amountByType[type] = (amountByType[type] ?? 0) + holding.totalCost
+  for (const asset of assets) {
+    const qty = asset.quantity ?? 0
+    if (qty <= 0) continue
+    const costFx = (asset.fxRateToBase != null && asset.fxRateToBase > 0)
+      ? asset.fxRateToBase
+      : getExFx(exchangeRate, asset.currency)
+    const cost = (asset.buyPrice ?? 0) * qty * costFx
+    amountByType[asset.assetType] = (amountByType[asset.assetType] ?? 0) + cost
   }
 
   const totalTWD = Object.values(amountByType).reduce((s, v) => s + v, 0) || 1
@@ -127,16 +131,19 @@ export function calcAllocationByAssetType(
 export function calcAllocationByCurrency(
   transactions: InvestmentTransaction[],
   assets: Asset[],
-  rebalanceTargets: RebalanceTarget[]
+  rebalanceTargets: RebalanceTarget[],
+  exchangeRate?: ExchangeRate
 ): AllocationItem[] {
-  const holdings = calcAllHoldings(transactions, assets)
   const amountByCurrency: Record<string, number> = {}
 
-  for (let i = 0; i < assets.length; i++) {
-    const asset = assets[i]
-    const holding = holdings[i]
-    const currency = asset.currency
-    amountByCurrency[currency] = (amountByCurrency[currency] ?? 0) + holding.totalCost
+  for (const asset of assets) {
+    const qty = asset.quantity ?? 0
+    if (qty <= 0) continue
+    const costFx = (asset.fxRateToBase != null && asset.fxRateToBase > 0)
+      ? asset.fxRateToBase
+      : getExFx(exchangeRate, asset.currency)
+    const cost = (asset.buyPrice ?? 0) * qty * costFx
+    amountByCurrency[asset.currency] = (amountByCurrency[asset.currency] ?? 0) + cost
   }
 
   const totalTWD = Object.values(amountByCurrency).reduce((s, v) => s + v, 0) || 1
@@ -163,6 +170,79 @@ export function calcAllocationByCurrency(
       diffAmountTWD,
       isWithinTolerance,
     }
+  })
+}
+
+// 市値版（使用 currentPrice * quantity 換算 TWD）
+function getExFx(exchangeRate: ExchangeRate | undefined, currency: string): number {
+  if (!exchangeRate || currency === 'TWD') return 1
+  if (currency === 'USD' && exchangeRate.usdRate > 0) return exchangeRate.usdRate
+  if (currency === 'JPY' && exchangeRate.jpyRate > 0) return exchangeRate.jpyRate
+  if (currency === 'CNY' && exchangeRate.cnyRate > 0) return exchangeRate.cnyRate
+  return 1
+}
+
+export function calcAllocationByAssetTypeMarketValue(
+  assets: Asset[],
+  exchangeRate: ExchangeRate | undefined,
+  rebalanceTargets: RebalanceTarget[],
+  accounts: Account[] = []
+): AllocationItem[] {
+  const amountByType: Record<string, number> = {}
+  for (const asset of assets) {
+    const qty = asset.quantity ?? 0
+    const price = asset.currentPrice ?? 0
+    if (qty <= 0 || price <= 0) continue
+    const mv = price * qty * getExFx(exchangeRate, asset.currency)
+    amountByType[asset.assetType] = (amountByType[asset.assetType] ?? 0) + mv
+  }
+  // 加入帳戶現金（含負値，統一換算 TWD 後加入 cash bucket）
+  for (const a of accounts) {
+    const bal = a.balance ?? 0
+    amountByType['cash'] = (amountByType['cash'] ?? 0) + bal * getExFx(exchangeRate, a.currency)
+  }
+  const totalTWD = Object.values(amountByType).reduce((s, v) => s + v, 0) || 1
+  return Object.entries(amountByType).map(([key, amt]) => {
+    const target = rebalanceTargets.find(t => t.targetType === 'assetType' && t.targetKey === key)
+    const targetPercent = target?.targetPercent ?? 0
+    const tolerancePercent = target?.tolerancePercent ?? 0
+    const currentPercent = amt / totalTWD
+    const targetAmountTWD = targetPercent * totalTWD
+    const diffAmountTWD = targetAmountTWD - amt
+    const isWithinTolerance = Math.abs(currentPercent - targetPercent) <= tolerancePercent
+    return { key, label: ASSET_TYPE_LABELS[key as AssetType] ?? key, currentAmountTWD: amt, currentPercent, targetPercent, tolerancePercent, targetAmountTWD, diffAmountTWD, isWithinTolerance }
+  })
+}
+
+export function calcAllocationByCurrencyMarketValue(
+  assets: Asset[],
+  exchangeRate: ExchangeRate | undefined,
+  rebalanceTargets: RebalanceTarget[],
+  accounts: Account[] = []
+): AllocationItem[] {
+  const amountByCurrency: Record<string, number> = {}
+  for (const asset of assets) {
+    const qty = asset.quantity ?? 0
+    const price = asset.currentPrice ?? 0
+    if (qty <= 0 || price <= 0) continue
+    const mv = price * qty * getExFx(exchangeRate, asset.currency)
+    amountByCurrency[asset.currency] = (amountByCurrency[asset.currency] ?? 0) + mv
+  }
+  // 加入帳戶現金：按帳戶原始幣別分配（含負値）
+  for (const a of accounts) {
+    const bal = a.balance ?? 0
+    amountByCurrency[a.currency] = (amountByCurrency[a.currency] ?? 0) + bal * getExFx(exchangeRate, a.currency)
+  }
+  const totalTWD = Object.values(amountByCurrency).reduce((s, v) => s + v, 0) || 1
+  return Object.entries(amountByCurrency).map(([key, amt]) => {
+    const target = rebalanceTargets.find(t => t.targetType === 'currency' && t.targetKey === key)
+    const targetPercent = target?.targetPercent ?? 0
+    const tolerancePercent = target?.tolerancePercent ?? 0
+    const currentPercent = amt / totalTWD
+    const targetAmountTWD = targetPercent * totalTWD
+    const diffAmountTWD = targetAmountTWD - amt
+    const isWithinTolerance = Math.abs(currentPercent - targetPercent) <= tolerancePercent
+    return { key, label: CURRENCY_LABELS[key as Currency] ?? key, currentAmountTWD: amt, currentPercent, targetPercent, tolerancePercent, targetAmountTWD, diffAmountTWD, isWithinTolerance }
   })
 }
 

@@ -47,18 +47,20 @@ const emptyTransferForm = (): TransferForm => ({
 
 function calcExRate(fromCur: string, toCur: string, er: { usdRate: number; jpyRate: number; cnyRate: number } | undefined): number {
   if (!er || fromCur === toCur) return 1
+  // toTWD: 將任意幣別换算為 TWD（新格式： usdRate = 1 USD = X TWD，直接使用）
   const toTWD = (c: string) => {
+    if (c === 'TWD') return 1
+    if (c === 'USD' && er.usdRate > 0) return er.usdRate
+    if (c === 'JPY' && er.jpyRate > 0) return er.jpyRate
+    if (c === 'CNY' && er.cnyRate > 0) return er.cnyRate
+    return 1
+  }
+  // fromTWD: 將 TWD 换算為任意幣別（反向）
+  const fromTWD = (c: string) => {
     if (c === 'TWD') return 1
     if (c === 'USD' && er.usdRate > 0) return 1 / er.usdRate
     if (c === 'JPY' && er.jpyRate > 0) return 1 / er.jpyRate
     if (c === 'CNY' && er.cnyRate > 0) return 1 / er.cnyRate
-    return 1
-  }
-  const fromTWD = (c: string) => {
-    if (c === 'TWD') return 1
-    if (c === 'USD') return er.usdRate
-    if (c === 'JPY') return er.jpyRate
-    if (c === 'CNY') return er.cnyRate
     return 1
   }
   return toTWD(fromCur) * fromTWD(toCur)

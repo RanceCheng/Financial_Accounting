@@ -68,14 +68,18 @@ const TX_TYPE_BADGE_CLASS: Record<string, string> = {
   withdrawal: 'badge-withdrawal',
 }
 
-function calcLotsStats(lots: AssetLot[]): { quantity: number | undefined; buyPrice: number } {
+function calcLotsStats(lots: AssetLot[]): { quantity: number | undefined; buyPrice: number; fxRateToBase: number | undefined } {
   const totalQty = lots.reduce((s, l) => s + (l.quantity ?? 0), 0)
   const withBoth = lots.filter(l => l.quantity != null && l.quantity > 0 && l.buyPrice != null)
   const weightedSum = withBoth.reduce((s, l) => s + l.buyPrice! * l.quantity!, 0)
   const qtyForWA = withBoth.reduce((s, l) => s + l.quantity!, 0)
+  const withFx = lots.filter(l => l.fxRateToBase != null && l.fxRateToBase > 0 && (l.quantity ?? 0) > 0)
+  const fxWeightedSum = withFx.reduce((s, l) => s + l.fxRateToBase! * (l.quantity ?? 0), 0)
+  const fxQty = withFx.reduce((s, l) => s + (l.quantity ?? 0), 0)
   return {
     quantity: totalQty > 0 ? totalQty : undefined,
     buyPrice: qtyForWA > 0 ? weightedSum / qtyForWA : 0,
+    fxRateToBase: fxQty > 0 ? parseFloat((fxWeightedSum / fxQty).toFixed(4)) : undefined,
   }
 }
 
@@ -103,6 +107,7 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
   const transactions = useLiveQuery(() => db.investmentTransactions.orderBy('date').reverse().toArray(), []) ?? []
   const assets = useLiveQuery(() => db.assets.toArray(), []) ?? []
   const accounts = useLiveQuery(() => db.accounts.toArray(), []) ?? []
+  const exchangeRate = useLiveQuery(() => db.exchangeRates.get('current'), [])
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editItem, setEditItem] = useState<InvestmentTransaction | null>(null)
@@ -180,12 +185,20 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
     setModalOpen(true)
   }
 
+  const getCurrentFxRate = (currency: string): number => {
+    if (currency === 'TWD' || !exchangeRate) return 1
+    if (currency === 'USD' && exchangeRate.usdRate > 0) return exchangeRate.usdRate
+    if (currency === 'JPY' && exchangeRate.jpyRate > 0) return exchangeRate.jpyRate
+    if (currency === 'CNY' && exchangeRate.cnyRate > 0) return exchangeRate.cnyRate
+    return 1
+  }
+
   const handleCurrencyChange = (currency: InvestmentTransactionInput['currency']) => {
     const currentAccount = accounts.find(a => a.id === form.accountId)
     setForm((prev) => ({
       ...prev,
       currency,
-      fxRateToBase: currency === 'TWD' ? 1 : prev.fxRateToBase,
+      fxRateToBase: getCurrentFxRate(currency),
       accountId: currentAccount?.currency === currency ? prev.accountId : '',
     }))
   }
@@ -255,6 +268,7 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
               id: uuidv4(),
               name: `${asset.name} ${buyDateLabel}`,
               buyPrice: form.price,
+              fxRateToBase: form.fxRateToBase > 0 ? form.fxRateToBase : undefined,
               buyDate,
               quantity: form.quantity,
             }
@@ -271,8 +285,8 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
               existingLots = [firstLot]
             }
             const allLots = [...existingLots, newLot]
-            const { quantity, buyPrice } = calcLotsStats(allLots)
-            await assetRepo.update(asset.id, { lots: allLots, quantity, buyPrice })
+            const { quantity, buyPrice, fxRateToBase } = calcLotsStats(allLots)
+            await assetRepo.update(asset.id, { lots: allLots, quantity, buyPrice, fxRateToBase })
           } else {
             // 賣出：FIFO，從最舊批次開始扣除
             let existingLotsForSell = asset.lots ?? []
@@ -300,8 +314,8 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
                 remaining = 0
               }
             }
-            const { quantity, buyPrice } = calcLotsStats(updatedLots)
-            await assetRepo.update(asset.id, { lots: updatedLots, quantity, buyPrice })
+            const { quantity, buyPrice, fxRateToBase } = calcLotsStats(updatedLots)
+            await assetRepo.update(asset.id, { lots: updatedLots, quantity, buyPrice, fxRateToBase })
           }
         }
       }
@@ -395,6 +409,7 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
               <SortTh label="數量" sortKey="quantity" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
               <SortTh label="單價" sortKey="price" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
               <th>幣別</th>
+              <th className="text-right">成本匯率</th>
               <th>手續費</th>
               <th>稅費</th>
               <SortTh label="淨額" sortKey="net" current={sortKey} dir={sortDir} onSort={handleSort} className="text-right" />
@@ -406,7 +421,7 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
           <tbody>
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={13} className="text-center text-gray-400 py-8">無交易紀錄</td>
+                <td colSpan={14} className="text-center text-gray-400 py-8">無交易紀錄</td>
               </tr>
             )}
             {sorted.map((tx) => {
@@ -432,6 +447,18 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
                   <td className="text-right font-mono">{formatNumber(tx.quantity, tx.quantity % 1 === 0 ? 0 : 4)}</td>
                   <td className="text-right font-mono">{formatNumber(tx.price, 2)}</td>
                   <td>{tx.currency}</td>
+                  <td className="text-right font-mono text-sm text-gray-600">
+                    {(() => {
+                      if (tx.currency === 'TWD') return '1'
+                      const stored = tx.fxRateToBase
+                      if (stored > 1) return stored.toFixed(4)
+                      // 歷史記錄無有效匯率時，顯示目前匯率參考
+                      if (tx.currency === 'USD' && exchangeRate?.usdRate) return exchangeRate.usdRate.toFixed(4)
+                      if (tx.currency === 'JPY' && exchangeRate?.jpyRate) return exchangeRate.jpyRate.toFixed(4)
+                      if (tx.currency === 'CNY' && exchangeRate?.cnyRate) return exchangeRate.cnyRate.toFixed(4)
+                      return stored > 0 ? stored.toFixed(4) : '—'
+                    })()}
+                  </td>
                   <td className="text-right text-sm text-gray-500">{formatNumber(tx.fee, 2)}</td>
                   <td className="text-right text-sm text-gray-500">{formatNumber(tx.tax, 2)}</td>
                   <td className={`text-right font-mono font-medium ${net > 0 ? '!text-red-500' : net < 0 ? '!text-green-600' : ''}`}>
@@ -473,7 +500,14 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
             <label className="label">資產 *</label>
             <select className="select" value={form.assetId} onChange={(e) => setForm({ ...form, assetId: e.target.value })}>
               <option value="">請選擇</option>
-              {assets.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.ticker})</option>)}
+              {(form.txType === 'sell'
+                ? [...assets].sort((a, b) => (b.quantity ?? 0) - (a.quantity ?? 0))
+                : assets
+              ).map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name} ({a.ticker}){form.txType === 'sell' && a.quantity != null ? ` — 持有 ${a.quantity}` : ''}
+                </option>
+              ))}
             </select>
             {errors.assetId && <span className="text-xs text-red-500">{errors.assetId}</span>}
           </div>
@@ -523,6 +557,11 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
           <div className="form-group">
             <label className="label">數量</label>
             <input type="number" min="0" step="1" className="input" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} />
+            {form.txType === 'sell' && (() => {
+              const selAsset = form.assetId ? assets.find(a => a.id === form.assetId) : undefined
+              if (!selAsset || selAsset.quantity == null) return null
+              return <span className="text-xs text-gray-400">現有數量：{selAsset.quantity}</span>
+            })()}
             {errors.quantity && <span className="text-xs text-red-500">{errors.quantity}</span>}
           </div>
           <div className="form-group">

@@ -37,6 +37,7 @@ export interface AssetLot {
   id: string
   name: string
   buyPrice?: number
+  fxRateToBase?: number  // 買入時匯率（1 外幣 = X TWD）；TWD 預設 1
   buyDate: string
   quantity?: number
 }
@@ -49,6 +50,7 @@ export interface Asset extends BaseEntity {
   currency: Currency
   quantity?: number
   buyPrice?: number
+  fxRateToBase?: number  // 加權平均成本匯率（1 外幣 = X TWD），由批次自動計算
   currentPrice?: number
   note?: string
   lots?: AssetLot[]
@@ -145,9 +147,9 @@ export interface AccountTransfer extends BaseEntity {
 export interface ExchangeRate {
   id: string        // 'current'
   updatedAt: string // 最後更新時間（ISO8601）
-  usdRate: number   // 1 TWD = X USD
-  jpyRate: number   // 1 TWD = X JPY
-  cnyRate: number   // 1 TWD = X CNY
+  usdRate: number   // 1 USD = X TWD
+  jpyRate: number   // 1 JPY = X TWD
+  cnyRate: number   // 1 CNY = X TWD
 }
 
 // ============================================================

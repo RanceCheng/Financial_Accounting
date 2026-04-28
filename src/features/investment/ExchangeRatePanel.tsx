@@ -32,9 +32,9 @@ export function ExchangeRatePanel() {
       if (data.result !== 'success') throw new Error('API 回傳失敗')
       await exchangeRateRepo.save({
         updatedAt: new Date().toISOString(),
-        usdRate: data.rates?.USD ?? 0,
-        jpyRate: data.rates?.JPY ?? 0,
-        cnyRate: data.rates?.CNY ?? 0,
+        usdRate: data.rates?.USD ? parseFloat((1 / data.rates.USD).toFixed(4)) : 0,
+        jpyRate: data.rates?.JPY ? parseFloat((1 / data.rates.JPY).toFixed(4)) : 0,
+        cnyRate: data.rates?.CNY ? parseFloat((1 / data.rates.CNY).toFixed(4)) : 0,
       })
     } catch (e) {
       setError(e instanceof Error ? e.message : '網路連線失敗，請稍後再試')
@@ -83,9 +83,9 @@ export function ExchangeRatePanel() {
             <tbody>
               <tr>
                 <td className="text-left text-gray-500 text-sm px-4 py-3 border-r border-gray-200">{formatDatetime(rate.updatedAt)}</td>
-                <td className="text-right font-mono font-medium text-blue-700 px-4 py-3 border-r border-gray-200">{rate.usdRate > 0 ? formatRate(1 / rate.usdRate, 4) : '—'}</td>
-                <td className="text-right font-mono font-medium text-blue-700 px-4 py-3 border-r border-gray-200">{rate.jpyRate > 0 ? formatRate(1 / rate.jpyRate, 4) : '—'}</td>
-                <td className="text-right font-mono font-medium text-blue-700 px-4 py-3">{rate.cnyRate > 0 ? formatRate(1 / rate.cnyRate, 4) : '—'}</td>
+                <td className="text-right font-mono font-medium text-blue-700 px-4 py-3 border-r border-gray-200">{rate.usdRate > 0 ? formatRate(rate.usdRate, 4) : '—'}</td>
+                <td className="text-right font-mono font-medium text-blue-700 px-4 py-3 border-r border-gray-200">{rate.jpyRate > 0 ? formatRate(rate.jpyRate, 4) : '—'}</td>
+                <td className="text-right font-mono font-medium text-blue-700 px-4 py-3">{rate.cnyRate > 0 ? formatRate(rate.cnyRate, 4) : '—'}</td>
               </tr>
             </tbody>
           </table>

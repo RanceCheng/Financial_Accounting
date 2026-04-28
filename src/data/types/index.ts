@@ -82,6 +82,7 @@ export interface IncomeExpenseRecord extends BaseEntity {
   date: string
   type: CashFlowType
   categoryId: string
+  accountId?: string
   amount: number
   currency: Currency
   fxRateToBase: number
@@ -89,11 +90,11 @@ export interface IncomeExpenseRecord extends BaseEntity {
 }
 
 // ============================================================
-// 月支出計畫
+// 月計畫（收入 / 支出）
 // ============================================================
 
 export interface MonthlyExpensePlan extends BaseEntity {
-  yearMonth: string // "YYYY-MM"
+  type?: CashFlowType  // 'income' | 'expense'（舊資料無此欄，視為 'expense'）
   categoryId: string
   plannedAmount: number
   currency: Currency

@@ -62,15 +62,14 @@ export const InvestmentTransactionSchema = BaseEntitySchema.extend({
 export const IncomeExpenseRecordSchema = BaseEntitySchema.extend({
   date: z.string().min(1, '日期必填'),
   type: z.enum(cashFlowTypes as [string, ...string[]]),
-  categoryId: z.string().min(1),
-  amount: z.number().min(0, '金額不可為負數'),
+  categoryId: z.string().min(1),  accountId: z.string().optional(),  amount: z.number().min(0, '金額不可為負數'),
   currency: z.enum(currencies as [string, ...string[]]),
   fxRateToBase: z.number().positive('匯率必須大於 0'),
   note: z.string().optional(),
 })
 
 export const MonthlyExpensePlanSchema = BaseEntitySchema.extend({
-  yearMonth: z.string().regex(/^\d{4}-\d{2}$/, '格式必須為 YYYY-MM'),
+  type: z.enum(cashFlowTypes as [string, ...string[]]).optional().default('expense'),
   categoryId: z.string().min(1),
   plannedAmount: z.number().min(0, '計畫金額不可為負數'),
   currency: z.enum(currencies as [string, ...string[]]),

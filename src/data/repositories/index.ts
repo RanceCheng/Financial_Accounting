@@ -120,8 +120,6 @@ export const incomeExpenseRepo = {
 export const monthlyPlanRepo = {
   getAll: () => db.monthlyExpensePlans.toArray(),
   getById: (id: string) => db.monthlyExpensePlans.get(id),
-  getByMonth: (yearMonth: string) =>
-    db.monthlyExpensePlans.where('yearMonth').equals(yearMonth).toArray(),
   add: async (input: MonthlyExpensePlanInput): Promise<MonthlyExpensePlan> => {
     const entity = newEntity(input) as MonthlyExpensePlan
     await db.monthlyExpensePlans.add(entity)

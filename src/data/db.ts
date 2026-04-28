@@ -72,6 +72,38 @@ export class FinancialDB extends Dexie {
         if (rate.cnyRate > 0) rate.cnyRate = parseFloat((1 / rate.cnyRate).toFixed(4))
       })
     })
+    // v5: 月支出計畫改為固定計畫（不綁定月份），移除 yearMonth 欄位
+    this.version(5).stores({
+      accounts: 'id, type, currency, name',
+      assets: 'id, assetType, market, currency, ticker, name',
+      investmentTransactions: 'id, date, assetId, accountId, txType, currency',
+      incomeExpenseRecords: 'id, date, type, categoryId, currency',
+      monthlyExpensePlans: 'id, categoryId',
+      categories: 'id, type, name',
+      rebalanceTargets: 'id, targetType, targetKey',
+      exchangeRates: 'id',
+      accountTransfers: 'id, date, fromAccountId, toAccountId',
+    }).upgrade(tx => {
+      return tx.table('monthlyExpensePlans').toCollection().modify((plan: Record<string, unknown>) => {
+        delete plan.yearMonth
+      })
+    })
+    // v6: 月計畫新增 type 欄位，現有資料補上 'expense'
+    this.version(6).stores({
+      accounts: 'id, type, currency, name',
+      assets: 'id, assetType, market, currency, ticker, name',
+      investmentTransactions: 'id, date, assetId, accountId, txType, currency',
+      incomeExpenseRecords: 'id, date, type, categoryId, currency',
+      monthlyExpensePlans: 'id, type, categoryId',
+      categories: 'id, type, name',
+      rebalanceTargets: 'id, targetType, targetKey',
+      exchangeRates: 'id',
+      accountTransfers: 'id, date, fromAccountId, toAccountId',
+    }).upgrade(tx => {
+      return tx.table('monthlyExpensePlans').toCollection().modify((plan: Record<string, unknown>) => {
+        if (!plan.type) plan.type = 'expense'
+      })
+    })
   }
 }
 

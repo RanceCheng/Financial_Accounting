@@ -268,22 +268,11 @@ export function calcMonthlySummaries(
     monthMap.set(key, entry)
   }
 
-  // also include months from plans
-  for (const p of plans) {
-    if (!monthMap.has(p.yearMonth)) {
-      monthMap.set(p.yearMonth, { income: 0, expense: 0 })
-    }
-  }
-
-  const planMap: Map<string, number> = new Map()
-  for (const p of plans) {
-    const cur = planMap.get(p.yearMonth) ?? 0
-    planMap.set(p.yearMonth, cur + p.plannedAmount)
-  }
+  // 固定計畫：每個有紀錄的月份都套用相同的計畫總額
+  const totalPlannedExpense = plans.reduce((sum, p) => sum + p.plannedAmount, 0)
 
   const summaries: MonthlySummary[] = []
   for (const [yearMonth, { income, expense }] of monthMap) {
-    const totalPlannedExpense = planMap.get(yearMonth) ?? 0
     const balance = income - expense
     const savingsRate = income > 0 ? balance / income : 0
     summaries.push({ yearMonth, totalIncome: income, totalExpense: expense, totalPlannedExpense, balance, savingsRate })

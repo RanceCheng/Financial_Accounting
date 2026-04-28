@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/data/db'
 import { IncomeExpenseRecord, Category, MonthlyExpensePlan } from '@/data/types'
-import { incomeExpenseRepo, monthlyPlanRepo, categoryRepo } from '@/data/repositories'
+import { incomeExpenseRepo, monthlyPlanRepo, categoryRepo, accountRepo } from '@/data/repositories'
 import {
   IncomeExpenseRecordInput,
   IncomeExpenseRecordSchema,
@@ -21,9 +21,9 @@ import { SortTh } from '@/components/common/SortTh'
 import { useSortable, sortByKey } from '@/lib/sorting'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, PieChart, Pie, Cell
+  ResponsiveContainer, PieChart, Pie, Cell, ReferenceLine
 } from 'recharts'
-import { Plus, Edit2, Trash2, DollarSign, TrendingUp, TrendingDown, Wallet } from 'lucide-react'
+import { Plus, Edit2, Trash2, DollarSign, TrendingUp, TrendingDown, Wallet, Banknote, ClipboardList } from 'lucide-react'
 
 const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#a855f7', '#06b6d4']
 
@@ -39,8 +39,8 @@ const emptyRecordForm = (): IncomeExpenseRecordInput => ({
   note: '',
 })
 
-const emptyPlanForm = (): MonthlyExpensePlanInput => ({
-  yearMonth: new Date().toISOString().slice(0, 7),
+const emptyPlanForm = (type: MonthlyExpensePlanInput['type'] = 'expense'): MonthlyExpensePlanInput => ({
+  type,
   categoryId: '',
   plannedAmount: 0,
   currency: 'TWD',
@@ -51,6 +51,8 @@ export function CashflowPage() {
   const records = useLiveQuery(() => db.incomeExpenseRecords.orderBy('date').reverse().toArray(), []) ?? []
   const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
   const plans = useLiveQuery(() => db.monthlyExpensePlans.toArray(), []) ?? []
+  const accounts = useLiveQuery(() => db.accounts.toArray(), []) ?? []
+  const exchangeRate = useLiveQuery(() => db.exchangeRates.get('current'), [])
 
   const [tab, setTab] = useState<MainTab>('monthly')
   const [recordModal, setRecordModal] = useState(false)
@@ -72,39 +74,61 @@ export function CashflowPage() {
 
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7))
 
+  const [importPlanModal, setImportPlanModal] = useState(false)
+  const [importPlanSelected, setImportPlanSelected] = useState<Set<string>>(new Set())
+  const [importPlanDate, setImportPlanDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [importPlanAccounts, setImportPlanAccounts] = useState<Record<string, string>>({})
+
   const categoryMap = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories])
   const incomeCategories = useMemo(() => {
     const seen = new Set<string>()
-    return categories.filter((c) => {
-      if (c.type !== 'income' || seen.has(c.name)) return false
-      seen.add(c.name)
-      return true
-    })
+    return categories
+      .filter((c) => {
+        if (c.type !== 'income' || seen.has(c.name)) return false
+        seen.add(c.name)
+        return true
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-TW-u-co-stroke'))
   }, [categories])
   const expenseCategories = useMemo(() => {
     const seen = new Set<string>()
-    return categories.filter((c) => {
-      if (c.type !== 'expense' || seen.has(c.name)) return false
-      seen.add(c.name)
-      return true
-    })
+    return categories
+      .filter((c) => {
+        if (c.type !== 'expense' || seen.has(c.name)) return false
+        seen.add(c.name)
+        return true
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-TW-u-co-stroke'))
   }, [categories])
 
-  const monthlySummaries = useMemo(() => calcMonthlySummaries(records, plans), [records, plans])
+  const monthlySummaries = useMemo(() => calcMonthlySummaries(records, plans.filter(p => (p.type ?? 'expense') === 'expense')), [records, plans])
+  const totalFixedPlan = useMemo(() => plans.filter(p => (p.type ?? 'expense') === 'expense').reduce((sum, p) => sum + p.plannedAmount, 0), [plans])
+
+  const cashAccountTotalTWD = useMemo(() => {
+    const getFx = (currency: string): number => {
+      if (!exchangeRate || currency === 'TWD') return 1
+      if (currency === 'USD' && exchangeRate.usdRate > 0) return exchangeRate.usdRate
+      if (currency === 'JPY' && exchangeRate.jpyRate > 0) return exchangeRate.jpyRate
+      if (currency === 'CNY' && exchangeRate.cnyRate > 0) return exchangeRate.cnyRate
+      return 1
+    }
+    return accounts
+      .filter(a => a.type === 'cash')
+      .reduce((sum, a) => sum + (a.balance ?? 0) * getFx(a.currency), 0)
+  }, [accounts, exchangeRate])
   const expenseByCat = useMemo(
-    () => calcExpenseByCategory(records, categories, selectedMonth),
+    () => calcExpenseByCategory(records, categories, selectedMonth).sort((a, b) => b.amount - a.amount),
     [records, categories, selectedMonth]
   )
 
   const currentSummary = monthlySummaries.find((s) => s.yearMonth === selectedMonth)
 
-  const availableMonths = useMemo(() => {
+  // 只顯示有實際收支紀錄的月份
+  const displayMonths = useMemo(() => {
     const months = new Set<string>()
     records.forEach((r) => months.add(getMonthKey(r.date)))
-    plans.forEach((p) => months.add(p.yearMonth))
-    months.add(new Date().toISOString().slice(0, 7))
     return Array.from(months).sort().reverse()
-  }, [records, plans])
+  }, [records])
 
   // Record CRUD
   const openAddRecord = () => {
@@ -116,9 +140,17 @@ export function CashflowPage() {
 
   const openEditRecord = (r: IncomeExpenseRecord) => {
     setEditRecord(r)
-    setRecordForm({ date: r.date, type: r.type, categoryId: r.categoryId, amount: r.amount, currency: r.currency, fxRateToBase: r.fxRateToBase, note: r.note ?? '' })
+    setRecordForm({ date: r.date, type: r.type, categoryId: r.categoryId, accountId: r.accountId, amount: r.amount, currency: r.currency, fxRateToBase: r.fxRateToBase, note: r.note ?? '' })
     setRecordErrors({})
     setRecordModal(true)
+  }
+
+  const applyAccountBalance = async (accountId: string | undefined, type: 'income' | 'expense', amount: number, reverse = false) => {
+    if (!accountId) return
+    const acc = await db.accounts.get(accountId)
+    if (!acc) return
+    const delta = (type === 'income' ? amount : -amount) * (reverse ? -1 : 1)
+    await accountRepo.update(accountId, { balance: (acc.balance ?? 0) + delta })
   }
 
   const handleSaveRecord = async () => {
@@ -129,9 +161,18 @@ export function CashflowPage() {
       setRecordErrors(errs)
       return
     }
+    const hasCashAccounts = accounts.some((a) => a.type === 'cash' && a.currency === recordForm.currency)
+    if (hasCashAccounts && !recordForm.accountId) {
+      setRecordErrors({ accountId: '請選擇現金帳戶' })
+      return
+    }
     if (editRecord) {
+      // 先 reverse 舊帳戶效果，再 apply 新帳戶效果
+      await applyAccountBalance(editRecord.accountId, editRecord.type, editRecord.amount, true)
+      await applyAccountBalance(recordForm.accountId, recordForm.type as 'income' | 'expense', recordForm.amount)
       await incomeExpenseRepo.update(editRecord.id, recordForm)
     } else {
+      await applyAccountBalance(recordForm.accountId, recordForm.type as 'income' | 'expense', recordForm.amount)
       await incomeExpenseRepo.add(recordForm)
     }
     setRecordModal(false)
@@ -139,22 +180,74 @@ export function CashflowPage() {
 
   const handleDeleteRecord = async () => {
     if (deleteRecordId) {
+      const rec = records.find((r) => r.id === deleteRecordId)
+      if (rec?.accountId) {
+        const acc = await db.accounts.get(rec.accountId)
+        if (acc) {
+          const delta = rec.type === 'income' ? -(rec.amount) : rec.amount
+          await accountRepo.update(rec.accountId, { balance: (acc.balance ?? 0) + delta })
+        }
+      }
       await incomeExpenseRepo.delete(deleteRecordId)
       setDeleteRecordId(null)
     }
   }
 
+  // Import Plans
+  const openImportPlanModal = () => {
+    setImportPlanDate(`${selectedMonth}-01`)
+    setImportPlanSelected(new Set(plans.map((p) => p.id)))
+    const autoAccs: Record<string, string> = {}
+    plans.filter(p => p.type === 'income').forEach(p => {
+      const first = accounts.find(a => a.type === 'cash' && a.currency === p.currency)
+      if (first) autoAccs[p.id] = first.id
+    })
+    setImportPlanAccounts(autoAccs)
+    setImportPlanModal(true)
+  }
+
+  const toggleImportPlan = (id: string) => {
+    setImportPlanSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleImportPlans = async () => {
+    const selectedPlans = plans.filter((p) => importPlanSelected.has(p.id))
+    for (const p of selectedPlans) {
+      const planType = (p.type ?? 'expense') as 'income' | 'expense'
+      const accountId = planType === 'income' ? (importPlanAccounts[p.id] || undefined) : undefined
+      await applyAccountBalance(accountId, planType, p.plannedAmount)
+      await incomeExpenseRepo.add({
+        date: importPlanDate,
+        type: planType,
+        categoryId: p.categoryId,
+        amount: p.plannedAmount,
+        currency: p.currency,
+        fxRateToBase: 1,
+        note: p.note ?? '',
+        accountId,
+      })
+    }
+    setImportPlanModal(false)
+    setImportPlanSelected(new Set())
+    setImportPlanAccounts({})
+  }
+
   // Plan CRUD
-  const openAddPlan = () => {
+  const openAddPlan = (type: MonthlyExpensePlanInput['type'] = 'expense') => {
     setEditPlan(null)
-    setPlanForm(emptyPlanForm())
+    setPlanForm(emptyPlanForm(type))
     setPlanErrors({})
     setPlanModal(true)
   }
 
   const openEditPlan = (p: MonthlyExpensePlan) => {
     setEditPlan(p)
-    setPlanForm({ yearMonth: p.yearMonth, categoryId: p.categoryId, plannedAmount: p.plannedAmount, currency: p.currency, note: p.note ?? '' })
+    setPlanForm({ type: ((p.type ?? 'expense') as MonthlyExpensePlanInput['type']), categoryId: p.categoryId, plannedAmount: p.plannedAmount, currency: p.currency, note: p.note ?? '' })
     setPlanErrors({})
     setPlanModal(true)
   }
@@ -220,9 +313,10 @@ export function CashflowPage() {
   // Sort states
   const { sortKey: mSortKey, sortDir: mSortDir, handleSort: handleMSort } = useSortable('yearMonth', 'desc')
   const { sortKey: rSortKey, sortDir: rSortDir, handleSort: handleRSort } = useSortable('date', 'desc')
-  const { sortKey: pSortKey, sortDir: pSortDir, handleSort: handlePSort } = useSortable('category')
+  const { sortKey: pSortKey, sortDir: pSortDir, handleSort: handlePSort } = useSortable('plannedAmount', 'desc')
+  const { sortKey: ipSortKey, sortDir: ipSortDir, handleSort: handleIPSort } = useSortable('plannedAmount', 'desc')
 
-  const sortedSummaries = useMemo(() => sortByKey(monthlySummaries, mSortKey, mSortDir, (s, key) => {
+  const sortedSummaries = useMemo(() => sortByKey(monthlySummaries.filter(s => s.totalIncome > 0 || s.totalExpense > 0), mSortKey, mSortDir, (s, key) => {
     switch (key) {
       case 'yearMonth': return s.yearMonth
       case 'totalIncome': return s.totalIncome
@@ -244,23 +338,31 @@ export function CashflowPage() {
     }
   }), [filteredRecords, rSortKey, rSortDir, categoryMap])
 
-  const sortedPlans = useMemo(() => {
-    const monthPlans = plans.filter((p) => p.yearMonth === selectedMonth)
-    return sortByKey(monthPlans, pSortKey, pSortDir, (p, key) => {
+  const sortedPlans = useMemo(() =>
+    sortByKey(plans.filter(p => (p.type ?? 'expense') === 'expense'), pSortKey, pSortDir, (p, key) => {
       switch (key) {
-        case 'yearMonth': return p.yearMonth
         case 'category': return categoryMap.get(p.categoryId)?.name ?? ''
         case 'plannedAmount': return p.plannedAmount
         default: return ''
       }
     })
-  }, [plans, selectedMonth, pSortKey, pSortDir, categoryMap])
+  , [plans, pSortKey, pSortDir, categoryMap])
 
-  const tabs: { id: MainTab; label: string }[] = [
-    { id: 'monthly', label: '月度總覽' },
-    { id: 'records', label: '收支紀錄' },
-    { id: 'plans', label: '月支出計畫' },
-    { id: 'categories', label: '分類管理' },
+  const sortedIncomePlans = useMemo(() =>
+    sortByKey(plans.filter(p => p.type === 'income'), ipSortKey, ipSortDir, (p, key) => {
+      switch (key) {
+        case 'category': return categoryMap.get(p.categoryId)?.name ?? ''
+        case 'plannedAmount': return p.plannedAmount
+        default: return ''
+      }
+    })
+  , [plans, ipSortKey, ipSortDir, categoryMap])
+
+  const tabs: { id: MainTab; label: string; activeColor: string; inactiveColor: string }[] = [
+    { id: 'monthly', label: '月度總覽', activeColor: 'bg-blue-500 text-white border-blue-500 shadow-sm', inactiveColor: 'bg-white text-blue-600 border-blue-300 hover:bg-blue-50' },
+    { id: 'records', label: '收支紀錄', activeColor: 'bg-emerald-500 text-white border-emerald-500 shadow-sm', inactiveColor: 'bg-white text-emerald-600 border-emerald-300 hover:bg-emerald-50' },
+    { id: 'plans', label: '固定月計畫', activeColor: 'bg-amber-500 text-white border-amber-500 shadow-sm', inactiveColor: 'bg-white text-amber-600 border-amber-300 hover:bg-amber-50' },
+    { id: 'categories', label: '分類管理', activeColor: 'bg-violet-500 text-white border-violet-500 shadow-sm', inactiveColor: 'bg-white text-violet-600 border-violet-300 hover:bg-violet-50' },
   ]
 
   return (
@@ -283,58 +385,63 @@ export function CashflowPage() {
       <div className="flex items-center gap-4 mb-6">
         <div className="form-group">
           <label className="label">選擇月份</label>
-          <select className="select" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}>
-            {availableMonths.map((m) => (
-              <option key={m} value={m}>{getMonthLabel(m)}</option>
-            ))}
+          <select className="select" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} disabled={displayMonths.length === 0}>
+            {displayMonths.length > 0
+              ? displayMonths.map((m) => (
+                  <option key={m} value={m}>{getMonthLabel(m)}</option>
+                ))
+              : <option value="">-</option>
+            }
           </select>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <StatCard
+          label="現金帳戶 (TWD)"
+          value={formatCurrency(cashAccountTotalTWD, 'TWD')}
+          icon={<Banknote className="w-4 h-4" />}
+          colorClass="text-blue-600"
+        />
         <StatCard
           label="月收入"
-          value={formatCurrency(currentSummary?.totalIncome ?? 0, 'TWD')}
+          value={currentSummary ? formatCurrency(currentSummary.totalIncome, 'TWD') : '-'}
           icon={<TrendingUp className="w-4 h-4" />}
           colorClass="text-green-600"
         />
         <StatCard
           label="月實際支出"
-          value={formatCurrency(currentSummary?.totalExpense ?? 0, 'TWD')}
+          value={currentSummary ? formatCurrency(currentSummary.totalExpense, 'TWD') : '-'}
           icon={<TrendingDown className="w-4 h-4" />}
           colorClass="text-red-500"
         />
         <StatCard
           label="月預計支出"
-          value={formatCurrency(currentSummary?.totalPlannedExpense ?? 0, 'TWD')}
+          value={currentSummary ? formatCurrency(currentSummary.totalPlannedExpense, 'TWD') : '-'}
           icon={<DollarSign className="w-4 h-4" />}
         />
         <StatCard
           label="月結餘 / 儲蓄率"
-          value={formatCurrency(currentSummary?.balance ?? 0, 'TWD')}
+          value={currentSummary ? formatCurrency(currentSummary.balance, 'TWD') : '-'}
           subValue={currentSummary ? formatPercent(currentSummary.savingsRate) : '-'}
           icon={<Wallet className="w-4 h-4" />}
-          colorClass={(currentSummary?.balance ?? 0) >= 0 ? 'text-green-600' : 'text-red-500'}
+          colorClass={currentSummary ? ((currentSummary.balance >= 0) ? 'text-green-600' : 'text-red-500') : undefined}
         />
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200 mb-6">
-        <nav className="flex gap-0 -mb-px">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-                tab === t.id
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
+      <div className="flex gap-3 mt-4 mb-6">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`px-5 py-2 text-sm font-semibold rounded-lg border-2 transition-all ${
+              tab === t.id ? t.activeColor : t.inactiveColor
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {/* Monthly overview */}
@@ -343,9 +450,9 @@ export function CashflowPage() {
           {/* Monthly bar chart */}
           <div className="card">
             <h3 className="font-semibold text-gray-800 mb-4">月收支趨勢</h3>
-            {monthlySummaries.length > 0 ? (
+            {displayMonths.length > 0 ? (
               <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={monthlySummaries.slice(-12)}>
+                <BarChart data={monthlySummaries.filter(s => s.totalIncome > 0 || s.totalExpense > 0).slice(-12)}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis dataKey="yearMonth" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
@@ -355,7 +462,15 @@ export function CashflowPage() {
                   <Legend />
                   <Bar dataKey="totalIncome" name="收入" fill="#10b981" radius={[3, 3, 0, 0]} />
                   <Bar dataKey="totalExpense" name="支出" fill="#ef4444" radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="totalPlannedExpense" name="預計支出" fill="#f59e0b" radius={[3, 3, 0, 0]} />
+                  {totalFixedPlan > 0 && (
+                    <ReferenceLine
+                      y={totalFixedPlan}
+                      stroke="#f59e0b"
+                      strokeDasharray="5 5"
+                      strokeWidth={2}
+                      label={{ value: `計畫支出 ${formatCurrency(totalFixedPlan, 'TWD')}`, position: 'insideTopRight', fontSize: 11, fill: '#b45309' }}
+                    />
+                  )}
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -367,17 +482,17 @@ export function CashflowPage() {
           <div className="card">
             <h3 className="font-semibold text-gray-800 mb-4">{getMonthLabel(selectedMonth)} 支出分類</h3>
             {expenseByCat.length > 0 ? (
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
+              <ResponsiveContainer width="100%" height={380}>
+                <PieChart margin={{ top: 20, right: 40, bottom: 20, left: 40 }}>
                   <Pie
                     data={expenseByCat}
                     dataKey="amount"
                     nameKey="categoryName"
                     cx="50%"
-                    cy="50%"
+                    cy="45%"
                     outerRadius={100}
                     label={({ categoryName, percent }) => `${categoryName} ${(percent * 100).toFixed(1)}%`}
-                    labelLine={false}
+                    labelLine={true}
                   >
                     {expenseByCat.map((_, i) => (
                       <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -388,7 +503,7 @@ export function CashflowPage() {
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <div className="flex items-center justify-center h-64 text-gray-400">此月份無支出資料</div>
+              <div className="flex items-center justify-center h-64 text-gray-400 text-2xl">-</div>
             )}
           </div>
 
@@ -416,13 +531,13 @@ export function CashflowPage() {
                       style={{ cursor: 'pointer' }}
                     >
                       <td className="font-medium">{getMonthLabel(s.yearMonth)}</td>
-                      <td className="text-right text-green-600">{formatCurrency(s.totalIncome, 'TWD')}</td>
-                      <td className="text-right text-red-500">{formatCurrency(s.totalExpense, 'TWD')}</td>
-                      <td className="text-right text-yellow-600">{formatCurrency(s.totalPlannedExpense, 'TWD')}</td>
-                      <td className={`text-right font-semibold ${s.balance >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      <td className={`text-right ${s.totalIncome < 0 ? '!text-red-600 !font-bold' : '!text-green-600'}`}>{formatCurrency(s.totalIncome, 'TWD')}</td>
+                      <td className={`text-right ${s.totalExpense < 0 ? '!text-red-600 !font-bold' : ''}`}>{formatCurrency(s.totalExpense, 'TWD')}</td>
+                      <td className={`text-right ${s.totalPlannedExpense < 0 ? '!text-red-600 !font-bold' : ''}`}>{formatCurrency(s.totalPlannedExpense, 'TWD')}</td>
+                      <td className={`text-right font-semibold ${s.balance < 0 ? '!text-red-600 !font-bold' : '!text-green-600'}`}>
                         {formatCurrency(s.balance, 'TWD')}
                       </td>
-                      <td className="text-right">{formatPercent(s.savingsRate)}</td>
+                      <td className={`text-right ${s.savingsRate < 0 ? '!text-red-600 !font-bold' : ''}`}>{formatPercent(s.savingsRate)}</td>
                     </tr>
                   ))}
                   {monthlySummaries.length === 0 && (
@@ -440,10 +555,16 @@ export function CashflowPage() {
         <div className="card">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-semibold text-gray-800">{getMonthLabel(selectedMonth)} 收支紀錄</h3>
-            <button onClick={openAddRecord} className="btn-primary btn-sm">
-              <Plus className="w-4 h-4" />
-              新增收支
-            </button>
+            <div className="flex gap-2">
+              <button onClick={openImportPlanModal} className="btn-secondary btn-sm" disabled={plans.length === 0}>
+                <ClipboardList className="w-4 h-4" />
+                匯入固定月計畫
+              </button>
+              <button onClick={openAddRecord} className="btn-primary btn-sm">
+                <Plus className="w-4 h-4" />
+                新增收支
+              </button>
+            </div>
           </div>
           <div className="table-container">
             <table className="table">
@@ -496,30 +617,30 @@ export function CashflowPage() {
 
       {/* Plans */}
       {tab === 'plans' && (
-        <div className="card">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-semibold text-gray-800">{getMonthLabel(selectedMonth)} 月支出計畫</h3>
-            <button onClick={openAddPlan} className="btn-primary btn-sm">
-              <Plus className="w-4 h-4" />
-              新增計畫
-            </button>
-          </div>
-          <div className="table-container">
-            <table className="table">
-              <thead>
-                <tr>
-                  <SortTh label="月份" sortKey="yearMonth" current={pSortKey} dir={pSortDir} onSort={handlePSort} />
-                  <SortTh label="分類" sortKey="category" current={pSortKey} dir={pSortDir} onSort={handlePSort} />
-                  <SortTh label="計畫金額" sortKey="plannedAmount" current={pSortKey} dir={pSortDir} onSort={handlePSort} className="text-right" />
-                  <th>幣別</th>
-                  <th>備註</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedPlans.map((p) => (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* 固定月支出計畫 */}
+          <div className="card">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-semibold text-red-700">固定月支出計畫</h3>
+              <button onClick={() => openAddPlan('expense')} className="btn-primary btn-sm">
+                <Plus className="w-4 h-4" />
+                新增支出計畫
+              </button>
+            </div>
+            <div className="table-container">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <SortTh label="分類" sortKey="category" current={pSortKey} dir={pSortDir} onSort={handlePSort} />
+                    <SortTh label="計畫金額" sortKey="plannedAmount" current={pSortKey} dir={pSortDir} onSort={handlePSort} className="text-right" />
+                    <th>幣別</th>
+                    <th>備註</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedPlans.map((p) => (
                     <tr key={p.id}>
-                      <td>{getMonthLabel(p.yearMonth)}</td>
                       <td>{categoryMap.get(p.categoryId)?.name ?? '-'}</td>
                       <td className="text-right font-mono">{formatCurrency(p.plannedAmount, p.currency)}</td>
                       <td>{p.currency}</td>
@@ -536,11 +657,59 @@ export function CashflowPage() {
                       </td>
                     </tr>
                   ))}
-                {sortedPlans.length === 0 && (
-                  <tr><td colSpan={6} className="text-center text-gray-400 py-8">本月無支出計畫</td></tr>
-                )}
-              </tbody>
-            </table>
+                  {sortedPlans.length === 0 && (
+                    <tr><td colSpan={5} className="text-center text-gray-400 py-8">尚無固定支出計畫</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* 月收入計畫 */}
+          <div className="card">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-semibold text-emerald-700">固定月收入計畫</h3>
+              <button onClick={() => openAddPlan('income')} className="btn-primary btn-sm">
+                <Plus className="w-4 h-4" />
+                新增收入計畫
+              </button>
+            </div>
+            <div className="table-container">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <SortTh label="分類" sortKey="category" current={ipSortKey} dir={ipSortDir} onSort={handleIPSort} />
+                    <SortTh label="計畫金額" sortKey="plannedAmount" current={ipSortKey} dir={ipSortDir} onSort={handleIPSort} className="text-right" />
+                    <th>幣別</th>
+                    <th>備註</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedIncomePlans.map((p) => (
+                    <tr key={p.id}>
+                      <td>{categoryMap.get(p.categoryId)?.name ?? '-'}</td>
+                      <td className="text-right font-mono">{formatCurrency(p.plannedAmount, p.currency)}</td>
+                      <td>{p.currency}</td>
+                      <td className="text-xs text-gray-400">{p.note || '-'}</td>
+                      <td>
+                        <div className="flex gap-1">
+                          <button onClick={() => openEditPlan(p)} className="p-1.5 rounded hover:bg-gray-100 text-gray-500">
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button onClick={() => setDeletePlanId(p.id)} className="p-1.5 rounded hover:bg-red-50 text-red-400">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {sortedIncomePlans.length === 0 && (
+                    <tr><td colSpan={5} className="text-center text-gray-400 py-8">尚無固定收入計畫</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -625,7 +794,7 @@ export function CashflowPage() {
           </div>
           <div className="form-group">
             <label className="label">幣別</label>
-            <select className="select" value={recordForm.currency} onChange={(e) => setRecordForm({ ...recordForm, currency: e.target.value as IncomeExpenseRecordInput['currency'], fxRateToBase: e.target.value === 'TWD' ? 1 : recordForm.fxRateToBase })}>
+            <select className="select" value={recordForm.currency} onChange={(e) => setRecordForm({ ...recordForm, currency: e.target.value as IncomeExpenseRecordInput['currency'], fxRateToBase: e.target.value === 'TWD' ? 1 : recordForm.fxRateToBase, accountId: undefined })}>
               {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
@@ -638,7 +807,69 @@ export function CashflowPage() {
           <div className={`form-group ${recordForm.currency !== 'TWD' ? '' : 'col-span-2'}`}>
             <label className="label">備註</label>
             <input className="input" value={recordForm.note} onChange={(e) => setRecordForm({ ...recordForm, note: e.target.value })} />
+            {(() => {
+              const topNotes = [...records
+                .map(r => r.note?.trim())
+                .filter((n): n is string => !!n)
+                .reduce((map, n) => { map.set(n, (map.get(n) ?? 0) + 1); return map }, new Map<string, number>())
+                .entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([n]) => n)
+              if (topNotes.length === 0) return null
+              return (
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {topNotes.map(n => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setRecordForm(prev => ({ ...prev, note: n }))}
+                      className="px-2 py-0.5 text-xs rounded border border-gray-300 bg-gray-50 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 text-gray-600 transition-colors"
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              )
+            })()}
           </div>
+          {(() => {
+            const cashAccounts = accounts
+              .filter((a) => a.type === 'cash' && a.currency === recordForm.currency)
+              .sort((a, b) => b.balance - a.balance)
+            if (cashAccounts.length === 0) return null
+            const selected = cashAccounts.find((a) => a.id === recordForm.accountId)
+            const previewBal = selected
+              ? (() => {
+                  const newDelta = recordForm.type === 'income' ? recordForm.amount : -recordForm.amount
+                  // 編輯模式且帳戶與原始相同時，需先 reverse 舊效果再加新效果
+                  if (editRecord && editRecord.accountId === selected.id) {
+                    const oldDelta = editRecord.type === 'income' ? editRecord.amount : -editRecord.amount
+                    return selected.balance - oldDelta + newDelta
+                  }
+                  return selected.balance + newDelta
+                })()
+              : null
+            return (
+              <div className="form-group col-span-2">
+                <label className="label">現金帳戶 *</label>
+                <select
+                  className="select"
+                  value={recordForm.accountId ?? ''}
+                  onChange={(e) => setRecordForm({ ...recordForm, accountId: e.target.value || undefined })}
+                >
+                  <option value="" disabled>請選擇</option>
+                  {cashAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}（現有 {formatCurrency(a.balance, a.currency)}）</option>
+                  ))}
+                </select>
+                {recordErrors.accountId && <span className="text-xs text-red-500">{recordErrors.accountId}</span>}
+                {previewBal !== null && (
+                  <span className="text-xs text-gray-400 mt-0.5 block">儲存後餘額：{formatCurrency(previewBal, recordForm.currency)}</span>
+                )}
+              </div>
+            )
+          })()}
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <button onClick={() => setRecordModal(false)} className="btn-secondary">取消</button>
@@ -647,18 +878,17 @@ export function CashflowPage() {
       </Modal>
 
       {/* Plan Modal */}
-      <Modal isOpen={planModal} onClose={() => setPlanModal(false)} title={editPlan ? '編輯月支出計畫' : '新增月支出計畫'}>
+      <Modal isOpen={planModal} onClose={() => setPlanModal(false)} title={
+        editPlan
+          ? (planForm.type === 'income' ? '編輯固定收入計畫' : '編輯固定支出計畫')
+          : (planForm.type === 'income' ? '新增固定收入計畫' : '新增固定支出計畫')
+      }>
         <div className="grid grid-cols-2 gap-4">
-          <div className="form-group">
-            <label className="label">月份 *</label>
-            <input type="month" className="input" value={planForm.yearMonth} onChange={(e) => setPlanForm({ ...planForm, yearMonth: e.target.value })} />
-            {planErrors.yearMonth && <span className="text-xs text-red-500">{planErrors.yearMonth}</span>}
-          </div>
-          <div className="form-group">
+          <div className="form-group col-span-2">
             <label className="label">分類 *</label>
             <select className="select" value={planForm.categoryId} onChange={(e) => setPlanForm({ ...planForm, categoryId: e.target.value })}>
               <option value="">請選擇</option>
-              {expenseCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {(planForm.type === 'income' ? incomeCategories : expenseCategories).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
             {planErrors.categoryId && <span className="text-xs text-red-500">{planErrors.categoryId}</span>}
           </div>
@@ -680,6 +910,98 @@ export function CashflowPage() {
         <div className="flex justify-end gap-3 mt-6">
           <button onClick={() => setPlanModal(false)} className="btn-secondary">取消</button>
           <button onClick={handleSavePlan} className="btn-primary">儲存</button>
+        </div>
+      </Modal>
+
+      {/* Import Plans Modal */}
+      <Modal isOpen={importPlanModal} onClose={() => setImportPlanModal(false)} title="匯入固定月計畫" size="lg">
+        <div className="form-group mb-4">
+          <label className="label">匯入日期</label>
+          <input type="date" className="input" value={importPlanDate} onChange={(e) => setImportPlanDate(e.target.value)} />
+        </div>
+        <div className="flex items-center gap-2 mb-3 pb-3 border-b border-gray-200">
+          <input
+            type="checkbox"
+            id="import-select-all"
+            checked={importPlanSelected.size === plans.length && plans.length > 0}
+            onChange={(e) =>
+              setImportPlanSelected(e.target.checked ? new Set(plans.map((p) => p.id)) : new Set())
+            }
+            className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+          />
+          <label htmlFor="import-select-all" className="text-sm font-semibold cursor-pointer">全部勾選</label>
+          <span className="text-xs text-gray-400 ml-auto">已選 {importPlanSelected.size} / {plans.length} 項</span>
+        </div>
+        {sortedPlans.length > 0 && (
+          <div className="mb-4">
+            <h4 className="text-sm font-semibold text-red-700 mb-2">固定月支出計畫</h4>
+            <div className="space-y-1.5">
+              {sortedPlans.map((p) => (
+                <label key={p.id} className="flex items-center gap-3 px-3 py-2 rounded-lg border border-gray-100 hover:bg-gray-50 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={importPlanSelected.has(p.id)}
+                    onChange={() => toggleImportPlan(p.id)}
+                    className="w-4 h-4 rounded border-gray-300"
+                  />
+                  <span className="flex-1 text-sm font-medium">{categoryMap.get(p.categoryId)?.name ?? '-'}</span>
+                  <span className="text-sm font-mono !text-red-500">{formatCurrency(p.plannedAmount, p.currency)}</span>
+                  <span className="text-xs text-gray-400">{p.currency}</span>
+                  {p.note && <span className="text-xs text-gray-400 truncate max-w-[8rem]">{p.note}</span>}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        {sortedIncomePlans.length > 0 && (
+          <div className="mb-4">
+            <h4 className="text-sm font-semibold text-emerald-700 mb-2">固定月收入計畫</h4>
+            <div className="space-y-1.5">
+              {sortedIncomePlans.map((p) => {
+                const cashAccs = accounts.filter(a => a.type === 'cash' && a.currency === p.currency)
+                const isSelected = importPlanSelected.has(p.id)
+                return (
+                  <div key={p.id} className="rounded-lg border border-gray-100">
+                    <label className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer rounded-lg">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleImportPlan(p.id)}
+                        className="w-4 h-4 rounded border-gray-300"
+                      />
+                      <span className="flex-1 text-sm font-medium">{categoryMap.get(p.categoryId)?.name ?? '-'}</span>
+                      <span className="text-sm font-mono !text-emerald-600">{formatCurrency(p.plannedAmount, p.currency)}</span>
+                      <span className="text-xs text-gray-400">{p.currency}</span>
+                      {p.note && <span className="text-xs text-gray-400 truncate max-w-[8rem]">{p.note}</span>}
+                    </label>
+                    {isSelected && cashAccs.length > 0 && (
+                      <div className="px-3 pb-2">
+                        <select
+                          className="select text-sm"
+                          value={importPlanAccounts[p.id] ?? ''}
+                          onChange={(e) => setImportPlanAccounts(prev => ({ ...prev, [p.id]: e.target.value }))}
+                        >
+                          <option value="">不連結帳戶</option>
+                          {cashAccs.sort((a, b) => b.balance - a.balance).map(a => (
+                            <option key={a.id} value={a.id}>{a.name}（現有 {formatCurrency(a.balance, a.currency)}）</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+        {plans.length === 0 && (
+          <div className="text-center text-gray-400 py-8">尚無固定月計畫，請先至「固定月計畫」分頁新增</div>
+        )}
+        <div className="flex justify-end gap-3 mt-6">
+          <button onClick={() => setImportPlanModal(false)} className="btn-secondary">取消</button>
+          <button onClick={handleImportPlans} className="btn-primary" disabled={importPlanSelected.size === 0}>
+            匯入{importPlanSelected.size > 0 ? `（${importPlanSelected.size} 項）` : ''}
+          </button>
         </div>
       </Modal>
 
@@ -714,7 +1036,7 @@ export function CashflowPage() {
       />
       <ConfirmDialog
         isOpen={!!deletePlanId}
-        title="刪除月支出計畫"
+        title="刪除固定月計畫"
         message="確定要刪除此計畫嗎？"
         confirmLabel="刪除"
         onConfirm={handleDeletePlan}

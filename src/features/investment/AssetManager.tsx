@@ -43,6 +43,11 @@ async function fetchViaTWSE(ticker: string): Promise<number> {
   throw new Error('twse-fail')
 }
 
+// 偵測是否以 file:// 協定開啟（靜態網頁雙擊模式）
+// file:// 下相對路徑 /api/... 無效；改用 http://localhost:8080/api/...（需同時執行 node serve.cjs）
+const isFileProtocol = typeof window !== 'undefined' && window.location.protocol === 'file:'
+const FILE_PROXY_BASE = 'http://localhost:8080'
+
 // --- Source 2: Yahoo Finance via CORS proxies (verified working proxies only) ---
 async function fetchWithTimeout(url: string, ms = 20000): Promise<Response> {
   const ctrl = new AbortController()
@@ -77,20 +82,21 @@ async function fetchViaYahoo(ticker: string, market: string): Promise<number> {
   const symbol = `${ticker}${suffix[market] ?? ''}`
   const params = `?interval=1d&range=2d`
 
-  // 1st: Vite dev-server proxy → no CORS, most reliable in dev mode
-  const viteProxy = `/api/yahoo-finance/v8/finance/chart/${symbol}${params}`
-  // 2nd & 3rd: CORS proxies for production / static builds
+  // dev/preview: Vite proxy（相對路徑）；file://: localhost:8080 proxy（serve.cjs）
+  const proxyBase = isFileProtocol ? FILE_PROXY_BASE : ''
+  const proxyEndpoint = `${proxyBase}/api/yahoo-finance/v8/finance/chart/${symbol}${params}`
   const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}${params}`
   const corsProxies = [
     `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
     `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`,
   ]
 
-  const allEndpoints = [viteProxy, ...corsProxies]
+  const allEndpoints = [proxyEndpoint, ...corsProxies]
+  const timeout = isFileProtocol ? 8000 : 20000
 
   for (const endpoint of allEndpoints) {
     try {
-      const res = await fetchWithTimeout(endpoint, 20000)
+      const res = await fetchWithTimeout(endpoint, timeout)
       if (!res.ok) continue
       const text = await res.text()
       const price = extractYahooPrice(text)
@@ -104,15 +110,18 @@ async function fetchViaYahoo(ticker: string, market: string): Promise<number> {
 // Fund: ticker is the full Yahoo Finance symbol (e.g. 0P0001EHG8.F), send as-is
 async function fetchViaFundYahoo(symbol: string): Promise<number> {
   const params = `?interval=1d&range=2d`
-  const viteProxy = `/api/yahoo-finance/v8/finance/chart/${encodeURIComponent(symbol)}${params}`
+  const proxyBase = isFileProtocol ? FILE_PROXY_BASE : ''
+  const proxyEndpoint = `${proxyBase}/api/yahoo-finance/v8/finance/chart/${encodeURIComponent(symbol)}${params}`
   const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}${params}`
   const corsProxies = [
     `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
     `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`,
   ]
-  for (const endpoint of [viteProxy, ...corsProxies]) {
+  const allEndpoints = [proxyEndpoint, ...corsProxies]
+  const timeout = isFileProtocol ? 8000 : 20000
+  for (const endpoint of allEndpoints) {
     try {
-      const res = await fetchWithTimeout(endpoint, 20000)
+      const res = await fetchWithTimeout(endpoint, timeout)
       if (!res.ok) continue
       const text = await res.text()
       const price = extractYahooPrice(text)
@@ -127,15 +136,17 @@ async function fetchViaStooq(ticker: string, market: string): Promise<number> {
   const symbol = `${ticker.toLowerCase()}${suffix[market] ?? ''}`
   const stooqUrl = `https://stooq.com/q/d/l/?s=${symbol}&i=d`
 
-  const viteProxy = `/api/stooq/q/d/l/?s=${symbol}&i=d`
+  const proxyBase = isFileProtocol ? FILE_PROXY_BASE : ''
+  const proxyEndpoint = `${proxyBase}/api/stooq/q/d/l/?s=${symbol}&i=d`
   const corsProxies = [
     `https://api.allorigins.win/raw?url=${encodeURIComponent(stooqUrl)}`,
   ]
-  const allEndpoints = [viteProxy, ...corsProxies]
+  const allEndpoints = [proxyEndpoint, ...corsProxies]
+  const timeout = isFileProtocol ? 8000 : 20000
 
   for (const endpoint of allEndpoints) {
     try {
-      const res = await fetch(endpoint)
+      const res = await fetchWithTimeout(endpoint, timeout)
       if (!res.ok) continue
       const text = await res.text()
       const lines = text.trim().split('\n').filter(Boolean)
@@ -152,10 +163,16 @@ async function fetchViaStooq(ticker: string, market: string): Promise<number> {
 async function fetchPrice(ticker: string, market: string, assetType?: string): Promise<number> {
   const errors: string[] = []
 
-  // 基金：優先處理（不受市場限制）
+  // 基金處理邏輯：
+  //   - ticker 含「.」→ 完整 Yahoo Finance 代碼（如 0P0001EHG8.F），直接送出
+  //   - ticker 以「0P」開頭 → Morningstar/Yahoo 基金代碼（如 0P0001CN2O），直接送出
+  //   - 其他（如 0050 ETF）→ fall-through 到股票流程，自動加市場後綴
   if (assetType === 'fund') {
     if (!ticker.trim()) throw new Error('請填入 Yahoo Finance 基金代碼（如 0P0001EHG8.F）')
-    return fetchViaFundYahoo(ticker.trim())
+    if (ticker.includes('.') || ticker.toUpperCase().startsWith('0P')) {
+      return fetchViaFundYahoo(ticker.trim())
+    }
+    // ETF（不含「.」且非 0P 開頭），fall through 到下方股票流程
   }
 
   // 其他/現金市場不支援自動抓價
@@ -163,8 +180,8 @@ async function fetchPrice(ticker: string, market: string, assetType?: string): P
     throw new Error('此市場不支援自動取得現價')
   }
 
-  // Taiwan: TWSE official API is most reliable
-  if (market === 'TW') {
+  // Taiwan: TWSE official API（file:// 下 origin=null 會被拒絕，跳過直接用 Yahoo）
+  if (market === 'TW' && !isFileProtocol) {
     try { return await fetchViaTWSE(ticker) } catch (e) { errors.push(`TWSE: ${e}`) }
   }
 

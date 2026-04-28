@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BrowserRouter } from 'react-router-dom'
+import { HashRouter } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { AppRouter } from '@/app/router'
 import { seedIfEmpty } from '@/data/seed'
@@ -23,11 +23,11 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
+    <HashRouter>
       <AppLayout>
         <AppRouter />
       </AppLayout>
-    </BrowserRouter>
+    </HashRouter>
   )
 }
 

@@ -10,7 +10,7 @@ import {
   MonthlyExpensePlanSchema,
   CategoryInput,
 } from '@/data/schemas'
-import { CURRENCIES, CASH_FLOW_TYPES, CASH_FLOW_TYPE_LABELS } from '@/lib/constants'
+import { CURRENCIES, CASH_FLOW_TYPES, CASH_FLOW_TYPE_LABELS, Currency } from '@/lib/constants'
 import { formatCurrency, formatDate, formatPercent, getMonthKey, getMonthLabel } from '@/lib/formatters'
 import { calcMonthlySummaries, calcExpenseByCategory } from '@/data/services'
 import { ImportExportButtons } from '@/components/common/ImportExportButtons'
@@ -865,7 +865,7 @@ export function CashflowPage() {
                 </select>
                 {recordErrors.accountId && <span className="text-xs text-red-500">{recordErrors.accountId}</span>}
                 {previewBal !== null && (
-                  <span className="text-xs text-gray-400 mt-0.5 block">儲存後餘額：{formatCurrency(previewBal, recordForm.currency)}</span>
+                  <span className="text-xs text-gray-400 mt-0.5 block">儲存後餘額：{formatCurrency(previewBal, recordForm.currency as Currency)}</span>
                 )}
               </div>
             )

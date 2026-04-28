@@ -82,7 +82,7 @@ export function calcTotalAssetTWD(
 }
 
 export function calcAllocationByAssetType(
-  transactions: InvestmentTransaction[],
+  _transactions: InvestmentTransaction[],
   assets: Asset[],
   rebalanceTargets: RebalanceTarget[],
   exchangeRate?: ExchangeRate
@@ -129,7 +129,7 @@ export function calcAllocationByAssetType(
 }
 
 export function calcAllocationByCurrency(
-  transactions: InvestmentTransaction[],
+  _transactions: InvestmentTransaction[],
   assets: Asset[],
   rebalanceTargets: RebalanceTarget[],
   exchangeRate?: ExchangeRate

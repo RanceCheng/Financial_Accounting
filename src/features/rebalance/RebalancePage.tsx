@@ -17,7 +17,7 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { SortTh } from '@/components/common/SortTh'
 import { useSortable, sortByKey } from '@/lib/sorting'
 import { ASSET_TYPES, CURRENCIES, ASSET_TYPE_LABELS, CURRENCY_LABELS } from '@/lib/constants'
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { Plus, Edit2, Trash2, Target, AlertCircle, CheckCircle2, RefreshCw, Wifi, WifiOff, X } from 'lucide-react'
 
 const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6']

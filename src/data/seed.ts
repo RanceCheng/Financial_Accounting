@@ -302,7 +302,7 @@ export async function seedIfEmpty(): Promise<void> {
       await db.monthlyExpensePlans.bulkAdd([
         {
           id: uuidv4(),
-          yearMonth: '2024-01',
+          type: 'expense' as const,
           categoryId: rentCategory.id,
           plannedAmount: 15000,
           currency: 'TWD',
@@ -311,18 +311,9 @@ export async function seedIfEmpty(): Promise<void> {
         },
         {
           id: uuidv4(),
-          yearMonth: '2024-01',
+          type: 'expense' as const,
           categoryId: diningCategory.id,
           plannedAmount: 10000,
-          currency: 'TWD',
-          createdAt: now(),
-          updatedAt: now(),
-        },
-        {
-          id: uuidv4(),
-          yearMonth: '2024-02',
-          categoryId: rentCategory.id,
-          plannedAmount: 15000,
           currency: 'TWD',
           createdAt: now(),
           updatedAt: now(),

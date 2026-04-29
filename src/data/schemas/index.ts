@@ -18,7 +18,7 @@ export const AccountSchema = BaseEntitySchema.extend({
   name: z.string().min(1, '帳戶名稱必填'),
   type: z.enum(accountTypes as [string, ...string[]]),
   currency: z.enum(currencies as [string, ...string[]]),
-  balance: z.number().min(0, '現有資金不可為負數'),
+  balance: z.number(),
   note: z.string().optional(),
 })
 

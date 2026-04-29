@@ -296,8 +296,8 @@ export function DataToolsPage() {
         <h1 className="text-2xl font-bold text-slate-800">資料工具</h1>
         <p className="text-sm text-slate-500 mt-1">健康檢查與備份管理</p>
       </div>
-      <HealthCheckPanel />
       <BackupPanel />
+      <HealthCheckPanel />
     </div>
   )
 }

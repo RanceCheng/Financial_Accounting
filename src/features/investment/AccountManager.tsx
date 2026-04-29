@@ -95,6 +95,8 @@ export function AccountManager() {
   const [deleteTransferId, setDeleteTransferId] = useState<string | null>(null)
   const [overdraftConfirmOpen, setOverdraftConfirmOpen] = useState(false)
   const [pendingTransfer, setPendingTransfer] = useState<Parameters<typeof accountTransferRepo.add>[0] | null>(null)
+  const [negativeBalanceConfirmOpen, setNegativeBalanceConfirmOpen] = useState(false)
+  const [pendingSaveForm, setPendingSaveForm] = useState<AccountInput | null>(null)
 
   const accountMap = useMemo(() => new Map(accounts.map(a => [a.id, a])), [accounts])
 
@@ -189,6 +191,16 @@ export function AccountManager() {
     setModalOpen(true)
   }
 
+  const executeSave = async (data: AccountInput) => {
+    if (editItem) {
+      await accountRepo.update(editItem.id, data)
+    } else {
+      await accountRepo.add(data)
+    }
+    setModalOpen(false)
+    setPendingSaveForm(null)
+  }
+
   const handleSave = async () => {
     const result = AccountSchema.omit({ id: true, createdAt: true, updatedAt: true }).safeParse(form)
     if (!result.success) {
@@ -205,12 +217,12 @@ export function AccountManager() {
       setErrors({ name: '已存在相同名稱且幣別相同的帳戶' })
       return
     }
-    if (editItem) {
-      await accountRepo.update(editItem.id, form)
-    } else {
-      await accountRepo.add(form)
+    if (form.balance < 0) {
+      setPendingSaveForm(form)
+      setNegativeBalanceConfirmOpen(true)
+      return
     }
-    setModalOpen(false)
+    await executeSave(form)
   }
 
   const handleDelete = async () => {
@@ -300,13 +312,13 @@ export function AccountManager() {
             <label className="label">現有資金</label>
             <input
               type="number"
-              min="0"
               step="0.01"
               className="input"
               value={form.balance}
               onChange={(e) => setForm({ ...form, balance: parseFloat(e.target.value) || 0 })}
               placeholder="0"
             />
+            {form.balance < 0 && <p className="text-xs text-orange-500 mt-0.5">⚠ 目前輸入為負數，儲存前將需確認</p>}
             {errors.balance && <span className="text-xs text-red-500">{errors.balance}</span>}
           </div>
           <div className="form-group col-span-2">
@@ -327,6 +339,16 @@ export function AccountManager() {
         confirmLabel="刪除"
         onConfirm={handleDelete}
         onCancel={() => setDeleteId(null)}
+        danger
+      />
+
+      <ConfirmDialog
+        isOpen={negativeBalanceConfirmOpen}
+        title="確認存入負數餘額"
+        message={`現有資金為 ${pendingSaveForm?.balance ?? ''} ${pendingSaveForm?.currency ?? ''}，確定要儲存負數餘額嗎？`}
+        confirmLabel="確認儲存"
+        onConfirm={async () => { setNegativeBalanceConfirmOpen(false); if (pendingSaveForm) await executeSave(pendingSaveForm) }}
+        onCancel={() => { setNegativeBalanceConfirmOpen(false); setPendingSaveForm(null) }}
         danger
       />
 

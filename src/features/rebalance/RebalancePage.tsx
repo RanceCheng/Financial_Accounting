@@ -51,7 +51,7 @@ export function RebalancePage() {
   const [selectedMvKey, setSelectedMvKey] = useState<string | null>(null)
   const [tableView, setTableView] = useState<'cost' | 'mv'>('mv')
 
-  const { sortKey, sortDir, handleSort } = useSortable('label')
+  const { sortKey, sortDir, handleSort } = useSortable('targetPercent', 'desc')
 
   const sortedTargets = useMemo(() => sortByKey(rebalanceTargets, sortKey, sortDir, (t, key) => {
     switch (key) {

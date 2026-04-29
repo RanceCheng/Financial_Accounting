@@ -197,6 +197,23 @@ export function RetirementPage() {
     const n = v / yDiv
     return `${Number.isInteger(n) ? n.toFixed(0) : n.toFixed(1)}${yUnit}`
   }
+
+  // P50 翻倍年份：依起始資產（所有模擬從同一起始値出發，p50[0] = currentAssets）
+  const doublingPoints = (() => {
+    if (bandData.length === 0) return []
+    const base = params.currentAssets > 0 ? params.currentAssets : bandData[0]?.p50
+    if (!base || base <= 0) return []
+    const pts: { age: number; multiple: number }[] = []
+    let next = 2
+    for (const d of bandData) {
+      if (d.p50 >= base * next) {
+        pts.push({ age: d.age, multiple: next })
+        next *= 2
+        if (next > 1024) break
+      }
+    }
+    return pts
+  })()
   const successCfg = result ? successColor(result.successRate) : null
   const SuccessIcon = successCfg?.icon
 
@@ -375,7 +392,7 @@ export function RetirementPage() {
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div>
                 <h2 className="text-base font-semibold text-slate-700">資產路徑分佈</h2>
-                <p className="text-xs text-slate-400 mt-0.5">深藍帶 = P25~P75（50% 情境），淺藍帶 = P10~P25 / P75~P90，實線 = 中位數</p>
+                <p className="text-xs text-slate-400 mt-0.5">深藍帶 = P25~P75（50% 情境），淺藍帶 = P10~P25 / P75~P90，實線 = 中位數；<span className="text-emerald-500">綠色虛線 = P50 資產翻倍年份（×2、×4…）</span></p>
               </div>
               <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
                 <Info className="w-3.5 h-3.5 shrink-0" />
@@ -415,6 +432,18 @@ export function RetirementPage() {
                   strokeWidth={1.5}
                   label={{ value: `退休 ${params.retireAge}歲`, position: 'insideTopRight', fontSize: 11, fill: '#ef4444' }}
                 />
+
+                {/* P50 翻倍年份標記線 */}
+                {doublingPoints.map((pt, i) => (
+                  <ReferenceLine
+                    key={`d${pt.multiple}`}
+                    x={pt.age}
+                    stroke="#10b981"
+                    strokeDasharray="3 3"
+                    strokeWidth={1.5}
+                    label={{ value: `×${pt.multiple}`, position: i % 2 === 0 ? 'insideTopLeft' : 'insideBottomLeft', fontSize: 10, fill: '#10b981' }}
+                  />
+                ))}
 
                 <Legend
                   wrapperStyle={{ fontSize: '12px', paddingTop: '12px' }}

@@ -23,7 +23,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell, ReferenceLine
 } from 'recharts'
-import { Plus, Edit2, Trash2, DollarSign, TrendingUp, TrendingDown, Wallet, Banknote, ClipboardList } from 'lucide-react'
+import { Plus, Edit2, Trash2, DollarSign, TrendingUp, TrendingDown, Wallet, Banknote, ClipboardList, ArrowDownToLine } from 'lucide-react'
 
 const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#a855f7', '#06b6d4']
 
@@ -794,16 +794,56 @@ export function CashflowPage() {
           </div>
           <div className="form-group">
             <label className="label">幣別</label>
-            <select className="select" value={recordForm.currency} onChange={(e) => setRecordForm({ ...recordForm, currency: e.target.value as IncomeExpenseRecordInput['currency'], fxRateToBase: e.target.value === 'TWD' ? 1 : recordForm.fxRateToBase, accountId: undefined })}>
+            <select className="select" value={recordForm.currency} onChange={(e) => {
+              const cur = e.target.value as IncomeExpenseRecordInput['currency']
+              let autoFx = recordForm.fxRateToBase
+              if (cur === 'TWD') autoFx = 1
+              else if (exchangeRate) {
+                if (cur === 'USD' && exchangeRate.usdRate > 0) autoFx = exchangeRate.usdRate
+                else if (cur === 'JPY' && exchangeRate.jpyRate > 0) autoFx = exchangeRate.jpyRate
+                else if (cur === 'CNY' && exchangeRate.cnyRate > 0) autoFx = exchangeRate.cnyRate
+              }
+              setRecordForm({ ...recordForm, currency: cur, fxRateToBase: autoFx, accountId: undefined })
+            }}>
               {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
-          {recordForm.currency !== 'TWD' && (
-            <div className="form-group">
-              <label className="label">匯率 (對 TWD)</label>
-              <input type="number" min="0.0001" step="0.01" className="input" value={recordForm.fxRateToBase} onChange={(e) => setRecordForm({ ...recordForm, fxRateToBase: Number(e.target.value) })} />
-            </div>
-          )}
+          {recordForm.currency !== 'TWD' && (() => {
+            const refFx = exchangeRate
+              ? (recordForm.currency === 'USD' ? exchangeRate.usdRate
+                : recordForm.currency === 'JPY' ? exchangeRate.jpyRate
+                : recordForm.currency === 'CNY' ? exchangeRate.cnyRate
+                : 0)
+              : 0
+            return (
+              <div className="form-group">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="label mb-0">匯率 (1 {recordForm.currency} = ? TWD)</label>
+                  {refFx > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setRecordForm(prev => ({ ...prev, fxRateToBase: refFx }))}
+                      title={`帶入系統匯率：${refFx}${exchangeRate?.updatedAt ? `（更新：${exchangeRate.updatedAt.slice(0,10)}）` : ''}`}
+                      className="flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-blue-300 text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
+                    >
+                      <ArrowDownToLine className="w-3 h-3" />
+                      帶入參考匯率
+                    </button>
+                  )}
+                </div>
+                <input type="number" min="0.0001" step="0.0001" className="input" value={recordForm.fxRateToBase} onChange={(e) => setRecordForm({ ...recordForm, fxRateToBase: Number(e.target.value) })} />
+                {refFx > 0 && (
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    參考：1 {recordForm.currency} ≈ {refFx} TWD
+                    {exchangeRate?.updatedAt ? `（${exchangeRate.updatedAt.slice(0,10)} 更新）` : ''}
+                  </p>
+                )}
+                {!exchangeRate && (
+                  <p className="text-xs text-orange-400 mt-0.5">尚無匯率資料，請至投資紀錄表更新匯率</p>
+                )}
+              </div>
+            )
+          })()}
           <div className={`form-group ${recordForm.currency !== 'TWD' ? '' : 'col-span-2'}`}>
             <label className="label">備註</label>
             <input className="input" value={recordForm.note} onChange={(e) => setRecordForm({ ...recordForm, note: e.target.value })} />

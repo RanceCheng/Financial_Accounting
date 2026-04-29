@@ -8,6 +8,7 @@ import {
   X,
   BarChart2,
   ShieldCheck,
+  Landmark,
 } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 
@@ -26,6 +27,11 @@ const navItems = [
     path: '/cashflow',
     label: '收入與消費表',
     icon: DollarSign,
+  },
+  {
+    path: '/retirement',
+    label: '退休規劃試算',
+    icon: Landmark,
   },
   {
     path: '/data-tools',

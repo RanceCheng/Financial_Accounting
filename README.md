@@ -38,12 +38,21 @@
 
 > 前提：已安裝 [Node.js](https://nodejs.org)（僅需 Node.js 本身，不需 npm install）
 
+下載並解壓縮 [`dist.zip`](dist.zip) 後，直接雙擊：
+
+```bash
+start-offline.bat
+# → 自動開啟瀏覽器 http://localhost:8080
+```
+
+也可以在專案目錄執行：
+
 ```bash
 node serve.cjs
 # → 自動開啟瀏覽器 http://localhost:8080
 ```
 
-或直接在檔案總管中雙擊 `serve.cjs`，瀏覽器會自動開啟。按 `Ctrl+C` 停止。
+此模式會啟動本機 API Proxy，更新股價 / 匯率最穩定。按 `Ctrl+C` 停止。
 
 ### 方式二：npm preview（需先 npm install）
 
@@ -55,7 +64,7 @@ npm run preview      # 預覽 → http://localhost:4173
 ### 方式三：部署 `dist/` 目錄至任意靜態伺服器
 將 `dist/` 目錄內的所有檔案部署至 Apache、Nginx、GitHub Pages 等即可。
 
-> 已提供打包好的 [`dist.zip`](dist.zip)，下載解壓縮後直接部署或搭配 `serve.cjs` 使用，無需自行執行打包指令。
+> 已提供完整離線包 [`dist.zip`](dist.zip)，內含 `dist/`、`serve.cjs`、`start-offline.bat`。解壓縮後建議雙擊 `start-offline.bat` 使用；若只雙擊 `dist/index.html`，基本介面可用，但更新股價會受瀏覽器 `file://` CORS 限制。
 
 ---
 
@@ -75,13 +84,13 @@ npm run preview      # 預覽 → http://localhost:4173
 
 ## 使用限制
 
-| 功能 | `node serve.cjs` | 雙擊 `index.html` |
+| 功能 | `start-offline.bat` / `node serve.cjs` | 雙擊 `index.html` |
 |------|:---:|:---:|
 | 基本介面 | ✅ | ✅ |
-| 更新股價 / 匯率 | ✅（內建 Proxy） | ⚠️（受瀏覽器 CORS 限制） |
+| 更新股價 / 匯率 | ✅（內建本機 Proxy） | ❌（受瀏覽器 `file://` CORS 限制） |
 | 資料儲存（IndexedDB） | ✅ | ✅ |
 
-> 建議使用 `node serve.cjs` 以獲得完整功能。
+> 建議使用 `start-offline.bat` 或 `node serve.cjs` 以獲得完整功能；不要直接從 `file://` 更新股價。
 
 ---
 

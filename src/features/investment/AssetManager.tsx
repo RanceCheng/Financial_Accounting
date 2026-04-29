@@ -44,9 +44,10 @@ async function fetchViaTWSE(ticker: string): Promise<number> {
 }
 
 // 偵測是否以 file:// 協定開啟（靜態網頁雙擊模式）
-// file:// 下相對路徑 /api/... 無效；改用 http://localhost:8080/api/...（需同時執行 node serve.cjs）
+// file:// 無法穩定跨網域抓取 Yahoo/Stooq；股價更新需搭配本機 proxy（serve.cjs）。
 const isFileProtocol = typeof window !== 'undefined' && window.location.protocol === 'file:'
 const FILE_PROXY_BASE = 'http://localhost:8080'
+let localProxyReadyPromise: Promise<boolean> | null = null
 
 // --- Source 2: Yahoo Finance via CORS proxies (verified working proxies only) ---
 async function fetchWithTimeout(url: string, ms = 20000): Promise<Response> {
@@ -56,6 +57,23 @@ async function fetchWithTimeout(url: string, ms = 20000): Promise<Response> {
     return await fetch(url, { signal: ctrl.signal, headers: { Accept: 'application/json' } })
   } finally {
     clearTimeout(id)
+  }
+}
+
+function checkLocalProxyReady(): Promise<boolean> {
+  if (!localProxyReadyPromise) {
+    localProxyReadyPromise = fetchWithTimeout(`${FILE_PROXY_BASE}/api/health`, 1200)
+      .then(res => res.ok)
+      .catch(() => false)
+  }
+  return localProxyReadyPromise
+}
+
+async function ensureLocalProxyReady(): Promise<void> {
+  if (!isFileProtocol) return
+  const ready = await checkLocalProxyReady()
+  if (!ready) {
+    throw new Error('離線版更新股價請使用 start-offline.bat ，避免瀏覽器 file:// 的 CORS 限制')
   }
 }
 
@@ -77,91 +95,65 @@ function extractYahooPrice(text: string): number | null {
   return null
 }
 
+// 競速輔助：單一端點嘗試取 Yahoo 股價，失敗或無效均 reject
+async function tryYahooEndpoint(endpoint: string, timeout: number): Promise<number> {
+  const res = await fetchWithTimeout(endpoint, timeout)
+  if (!res.ok) throw new Error(`http-${res.status}`)
+  const text = await res.text()
+  const price = extractYahooPrice(text)
+  if (price == null) throw new Error('no-price')
+  return price
+}
+
 async function fetchViaYahoo(ticker: string, market: string): Promise<number> {
   const suffix: Record<string, string> = { TW: '.TW', JP: '.T', CN: '.SS', US: '' }
   const symbol = `${ticker}${suffix[market] ?? ''}`
   const params = `?interval=1d&range=2d`
+  const endpoint = isFileProtocol
+    ? `${FILE_PROXY_BASE}/api/yahoo-finance/v8/finance/chart/${symbol}${params}`
+    : `/api/yahoo-finance/v8/finance/chart/${symbol}${params}`
 
-  // dev/preview: Vite proxy（相對路徑）；file://: localhost:8080 proxy（serve.cjs）
-  const proxyBase = isFileProtocol ? FILE_PROXY_BASE : ''
-  const proxyEndpoint = `${proxyBase}/api/yahoo-finance/v8/finance/chart/${symbol}${params}`
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}${params}`
-  const corsProxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
-    `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`,
-  ]
-
-  const allEndpoints = [proxyEndpoint, ...corsProxies]
-  const timeout = isFileProtocol ? 8000 : 20000
-
-  for (const endpoint of allEndpoints) {
-    try {
-      const res = await fetchWithTimeout(endpoint, timeout)
-      if (!res.ok) continue
-      const text = await res.text()
-      const price = extractYahooPrice(text)
-      if (price != null) return price
-    } catch { continue }
-  }
-  throw new Error('yahoo-fail')
+  return tryYahooEndpoint(endpoint, 15000)
 }
 
 // --- Source 3: Stooq CSV via CORS proxy ---
 // Fund: ticker is the full Yahoo Finance symbol (e.g. 0P0001EHG8.F), send as-is
 async function fetchViaFundYahoo(symbol: string): Promise<number> {
   const params = `?interval=1d&range=2d`
-  const proxyBase = isFileProtocol ? FILE_PROXY_BASE : ''
-  const proxyEndpoint = `${proxyBase}/api/yahoo-finance/v8/finance/chart/${encodeURIComponent(symbol)}${params}`
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}${params}`
-  const corsProxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
-    `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`,
-  ]
-  const allEndpoints = [proxyEndpoint, ...corsProxies]
-  const timeout = isFileProtocol ? 8000 : 20000
-  for (const endpoint of allEndpoints) {
-    try {
-      const res = await fetchWithTimeout(endpoint, timeout)
-      if (!res.ok) continue
-      const text = await res.text()
-      const price = extractYahooPrice(text)
-      if (price != null) return price
-    } catch { continue }
-  }
-  throw new Error('fund-yahoo-fail')
+  const endpoint = isFileProtocol
+    ? `${FILE_PROXY_BASE}/api/yahoo-finance/v8/finance/chart/${encodeURIComponent(symbol)}${params}`
+    : `/api/yahoo-finance/v8/finance/chart/${encodeURIComponent(symbol)}${params}`
+
+  return tryYahooEndpoint(endpoint, 15000)
+}
+
+async function tryStooqEndpoint(endpoint: string, timeout: number): Promise<number> {
+  const res = await fetchWithTimeout(endpoint, timeout)
+  if (!res.ok) throw new Error(`http-${res.status}`)
+  const text = await res.text()
+  const lines = text.trim().split('\n').filter(Boolean)
+  // header: Date,Open,High,Low,Close,Volume — take last data row, Close = index 4
+  if (lines.length < 2) throw new Error('no-data')
+  const cols = lines[lines.length - 1].split(',')
+  const price = parseFloat(cols[4])
+  if (isNaN(price) || price <= 0) throw new Error('invalid-price')
+  return price
 }
 
 async function fetchViaStooq(ticker: string, market: string): Promise<number> {
   const suffix: Record<string, string> = { TW: '.tw', JP: '.jp', US: '.us', CN: '.cn' }
   const symbol = `${ticker.toLowerCase()}${suffix[market] ?? ''}`
-  const stooqUrl = `https://stooq.com/q/d/l/?s=${symbol}&i=d`
+  const endpoint = isFileProtocol
+    ? `${FILE_PROXY_BASE}/api/stooq/q/d/l/?s=${symbol}&i=d`
+    : `/api/stooq/q/d/l/?s=${symbol}&i=d`
 
-  const proxyBase = isFileProtocol ? FILE_PROXY_BASE : ''
-  const proxyEndpoint = `${proxyBase}/api/stooq/q/d/l/?s=${symbol}&i=d`
-  const corsProxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(stooqUrl)}`,
-  ]
-  const allEndpoints = [proxyEndpoint, ...corsProxies]
-  const timeout = isFileProtocol ? 8000 : 20000
-
-  for (const endpoint of allEndpoints) {
-    try {
-      const res = await fetchWithTimeout(endpoint, timeout)
-      if (!res.ok) continue
-      const text = await res.text()
-      const lines = text.trim().split('\n').filter(Boolean)
-      // header: Date,Open,High,Low,Close,Volume — take last data row, Close = index 4
-      if (lines.length < 2) continue
-      const cols = lines[lines.length - 1].split(',')
-      const price = parseFloat(cols[4])
-      if (!isNaN(price) && price > 0) return price
-    } catch { continue }
-  }
-  throw new Error('stooq-fail')
+  return tryStooqEndpoint(endpoint, 15000)
 }
 
 async function fetchPrice(ticker: string, market: string, assetType?: string): Promise<number> {
   const errors: string[] = []
+
+  await ensureLocalProxyReady()
 
   // 基金處理邏輯：
   //   - ticker 含「.」→ 完整 Yahoo Finance 代碼（如 0P0001EHG8.F），直接送出
@@ -387,7 +379,7 @@ export function AssetManager() {
   }
 
   // Bulk price update state
-  type BulkResult = { name: string; ticker: string; status: 'success' | 'error' | 'skip'; price?: number }
+  type BulkResult = { name: string; ticker: string; status: 'success' | 'error' | 'skip'; price?: number; message?: string }
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkRunning, setBulkRunning] = useState(false)
   const [bulkResults, setBulkResults] = useState<BulkResult[]>([])
@@ -411,8 +403,13 @@ export function AssetManager() {
         }
         await assetRepo.update(a.id, update)
         results.push({ name: a.name, ticker: a.ticker, status: 'success', price })
-      } catch {
-        results.push({ name: a.name, ticker: a.ticker, status: 'error' })
+      } catch (e) {
+        results.push({
+          name: a.name,
+          ticker: a.ticker,
+          status: 'error',
+          message: e instanceof Error ? e.message : '未知錯誤',
+        })
       }
       setBulkResults([...results])
     }
@@ -798,7 +795,7 @@ export function AssetManager() {
       {/* Bulk Price Update Modal */}
       <Modal isOpen={bulkOpen} onClose={() => { if (!bulkRunning) setBulkOpen(false) }} title="更新所有股價">
         <div className="space-y-4">
-          <p className="text-sm text-gray-500">自動從 Yahoo Finance 取得所有資產的最新市價（CASH 類跟過）。</p>
+          <p className="text-sm text-gray-500">自動從 Yahoo Finance 取得所有資產的最新市價（CASH 類跳過）。</p>
 
           {bulkResults.length > 0 && (
             <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
@@ -806,7 +803,7 @@ export function AssetManager() {
                 <div key={i} className="flex items-center justify-between px-3 py-2 text-sm">
                   <span className="font-medium text-gray-700">{r.name} <span className="font-mono text-gray-400 text-xs">{r.ticker}</span></span>
                   {r.status === 'success' && <span className="text-green-600 font-mono">{r.price?.toLocaleString()}</span>}
-                  {r.status === 'error' && <span className="text-red-500">取得失敗</span>}
+                  {r.status === 'error' && <span className="text-red-500 text-right" title={r.message}>取得失敗{r.message ? `：${r.message}` : ''}</span>}
                   {r.status === 'skip' && <span className="text-gray-400">跳過</span>}
                 </div>
               ))}

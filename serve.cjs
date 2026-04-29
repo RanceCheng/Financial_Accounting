@@ -78,6 +78,12 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  if (pathname === '/api/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS })
+    res.end(JSON.stringify({ ok: true }))
+    return
+  }
+
   // Proxy: /api/yahoo-finance → query1.finance.yahoo.com
   if (pathname.startsWith('/api/yahoo-finance')) {
     const targetPath = fullPath.replace('/api/yahoo-finance', '') || '/'

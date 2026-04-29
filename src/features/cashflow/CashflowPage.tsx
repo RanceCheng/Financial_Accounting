@@ -104,18 +104,26 @@ export function CashflowPage() {
   const monthlySummaries = useMemo(() => calcMonthlySummaries(records, plans.filter(p => (p.type ?? 'expense') === 'expense')), [records, plans])
   const totalFixedPlan = useMemo(() => plans.filter(p => (p.type ?? 'expense') === 'expense').reduce((sum, p) => sum + p.plannedAmount, 0), [plans])
 
-  const cashAccountTotalTWD = useMemo(() => {
-    const getFx = (currency: string): number => {
-      if (!exchangeRate || currency === 'TWD') return 1
-      if (currency === 'USD' && exchangeRate.usdRate > 0) return exchangeRate.usdRate
-      if (currency === 'JPY' && exchangeRate.jpyRate > 0) return exchangeRate.jpyRate
-      if (currency === 'CNY' && exchangeRate.cnyRate > 0) return exchangeRate.cnyRate
-      return 1
-    }
-    return accounts
+  const [showCashBreakdown, setShowCashBreakdown] = useState(false)
+
+  const getFx = (currency: string): number => {
+    if (!exchangeRate || currency === 'TWD') return 1
+    if (currency === 'USD' && exchangeRate.usdRate > 0) return exchangeRate.usdRate
+    if (currency === 'JPY' && exchangeRate.jpyRate > 0) return exchangeRate.jpyRate
+    if (currency === 'CNY' && exchangeRate.cnyRate > 0) return exchangeRate.cnyRate
+    return 1
+  }
+
+  const cashAccountBreakdown = useMemo(() =>
+    accounts
       .filter(a => a.type === 'cash')
-      .reduce((sum, a) => sum + (a.balance ?? 0) * getFx(a.currency), 0)
-  }, [accounts, exchangeRate])
+      .map(a => ({ ...a, balanceTWD: (a.balance ?? 0) * getFx(a.currency) }))
+      .sort((a, b) => b.balanceTWD - a.balanceTWD)
+  , [accounts, exchangeRate])
+
+  const cashAccountTotalTWD = useMemo(() =>
+    cashAccountBreakdown.reduce((sum, a) => sum + a.balanceTWD, 0)
+  , [cashAccountBreakdown])
   const expenseByCat = useMemo(
     () => calcExpenseByCategory(records, categories, selectedMonth).sort((a, b) => b.amount - a.amount),
     [records, categories, selectedMonth]
@@ -402,6 +410,7 @@ export function CashflowPage() {
           value={formatCurrency(cashAccountTotalTWD, 'TWD')}
           icon={<Banknote className="w-4 h-4" />}
           colorClass="text-blue-600"
+          onClick={() => setShowCashBreakdown(true)}
         />
         <StatCard
           label="月收入"
@@ -764,6 +773,39 @@ export function CashflowPage() {
           </div>
         </div>
       )}
+
+      {/* 現金帳戶構成 Modal */}
+      <Modal isOpen={showCashBreakdown} onClose={() => setShowCashBreakdown(false)} title="現金帳戶構成明細">
+        {cashAccountBreakdown.length === 0 ? (
+          <p className="text-sm text-slate-400 py-4 text-center">尚無現金帳戶</p>
+        ) : (
+          <div className="space-y-1">
+            {cashAccountBreakdown.map(a => (
+              <div key={a.id} className="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
+                <div>
+                  <span className="font-medium text-slate-700">{a.name}</span>
+                  <span className="ml-2 text-xs text-slate-400">{a.currency}</span>
+                </div>
+                <div className="text-right">
+                  <div className={`font-mono font-semibold ${(a.balance ?? 0) < 0 ? 'text-red-500' : 'text-slate-800'}`}>
+                    {formatCurrency(a.balance ?? 0, a.currency)}
+                  </div>
+                  {a.currency !== 'TWD' && (
+                    <div className="text-xs text-slate-400">≈ {formatCurrency(a.balanceTWD, 'TWD')}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+            <div className="flex items-center justify-between pt-3 mt-1">
+              <span className="font-semibold text-slate-600">合計 (TWD)</span>
+              <span className="font-mono font-bold text-blue-600">{formatCurrency(cashAccountTotalTWD, 'TWD')}</span>
+            </div>
+          </div>
+        )}
+        <div className="flex justify-end mt-4">
+          <button className="btn-secondary" onClick={() => setShowCashBreakdown(false)}>關閉</button>
+        </div>
+      </Modal>
 
       {/* Record Modal */}
       <Modal isOpen={recordModal} onClose={() => setRecordModal(false)} title={editRecord ? '編輯收支' : '新增收支'}>

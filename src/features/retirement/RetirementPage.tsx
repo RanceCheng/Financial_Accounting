@@ -25,8 +25,11 @@ const DEFAULT: SimParams = {
 }
 
 // ── 格式化輔助 ──
-function wan(v: number) {
-  return `${(v / 10_000).toLocaleString('zh-TW', { maximumFractionDigits: 0 })} 萬`
+function formatTWD(v: number): string {
+  if (v >= 1_000_000_000_000) return `${(v / 1_000_000_000_000).toFixed(2)} 兆`
+  if (v >= 100_000_000)       return `${(v / 100_000_000).toFixed(2)} 億`
+  if (v >= 10_000)            return `${(v / 10_000).toLocaleString('zh-TW', { maximumFractionDigits: 0 })} 萬`
+  return `${Math.round(v).toLocaleString('zh-TW')}`
 }
 function pct(v: number) {
   return `${(v * 100).toFixed(1)} %`
@@ -73,7 +76,7 @@ function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) 
       {([['P90', d._p90, '#94a3b8'], ['P75', d._p75, '#60a5fa'], ['P50 中位數', d.p50, '#2563eb'], ['P25', d._p25, '#60a5fa'], ['P10', d._p10, '#94a3b8']] as [string, number, string][]).map(([name, val, color]) => (
         <div key={name} className="flex justify-between gap-4">
           <span style={{ color }} className="font-medium">{name}</span>
-          <span className="text-slate-700">{wan(val)}</span>
+          <span className="text-slate-700">{formatTWD(val)}</span>
         </div>
       ))}
     </div>
@@ -182,6 +185,18 @@ export function RetirementPage() {
   }, [params])
 
   const bandData = result ? toBandData(result.chartData) : []
+
+  // Y 軸單位：依最大資產值自動切換萬/億/兆
+  const maxBandVal = bandData.length > 0
+    ? Math.max(...bandData.map(d => d.base + d.band1 + d.band2 + d.band3))
+    : 0
+  const [yUnit, yDiv] = maxBandVal >= 1e12 ? ['兆', 1e12]
+    : maxBandVal >= 1e8 ? ['億', 1e8]
+    : ['萬', 1e4]
+  const yAxisFormatter = (v: number) => {
+    const n = v / yDiv
+    return `${Number.isInteger(n) ? n.toFixed(0) : n.toFixed(1)}${yUnit}`
+  }
   const successCfg = result ? successColor(result.successRate) : null
   const SuccessIcon = successCfg?.icon
 
@@ -332,7 +347,7 @@ export function RetirementPage() {
             {/* 退休時資產中位數 */}
             <div className="card p-4">
               <div className="text-xs font-medium text-slate-500 mb-1">退休時資產（中位數）</div>
-              <div className="text-2xl font-bold text-slate-800">{wan(result.retireMedianAsset)}</div>
+              <div className="text-2xl font-bold text-slate-800">{formatTWD(result.retireMedianAsset)}</div>
               <p className="text-xs text-slate-400 mt-1">{params.retireAge} 歲時</p>
             </div>
 
@@ -377,9 +392,9 @@ export function RetirementPage() {
                   tick={{ fontSize: 11, fill: '#64748b' }}
                 />
                 <YAxis
-                  tickFormatter={v => `${Math.round(v / 10_000)}萬`}
+                  tickFormatter={yAxisFormatter}
                   tick={{ fontSize: 11, fill: '#64748b' }}
-                  width={56}
+                  width={72}
                 />
                 <Tooltip content={<ChartTooltip />} />
 

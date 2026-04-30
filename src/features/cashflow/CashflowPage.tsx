@@ -37,6 +37,7 @@ const emptyRecordForm = (): IncomeExpenseRecordInput => ({
   currency: 'TWD',
   fxRateToBase: 1,
   note: '',
+  linkedTicker: '',
 })
 
 const emptyPlanForm = (type: MonthlyExpensePlanInput['type'] = 'expense'): MonthlyExpensePlanInput => ({
@@ -45,6 +46,7 @@ const emptyPlanForm = (type: MonthlyExpensePlanInput['type'] = 'expense'): Month
   plannedAmount: 0,
   currency: 'TWD',
   note: '',
+  linkedTicker: '',
 })
 
 export function CashflowPage() {
@@ -52,6 +54,7 @@ export function CashflowPage() {
   const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
   const plans = useLiveQuery(() => db.monthlyExpensePlans.toArray(), []) ?? []
   const accounts = useLiveQuery(() => db.accounts.toArray(), []) ?? []
+  const assets = useLiveQuery(() => db.assets.orderBy('ticker').toArray(), []) ?? []
   const exchangeRate = useLiveQuery(() => db.exchangeRates.get('current'), [])
 
   const [tab, setTab] = useState<MainTab>('monthly')
@@ -148,7 +151,7 @@ export function CashflowPage() {
 
   const openEditRecord = (r: IncomeExpenseRecord) => {
     setEditRecord(r)
-    setRecordForm({ date: r.date, type: r.type, categoryId: r.categoryId, accountId: r.accountId, amount: r.amount, currency: r.currency, fxRateToBase: r.fxRateToBase, note: r.note ?? '' })
+    setRecordForm({ date: r.date, type: r.type, categoryId: r.categoryId, accountId: r.accountId, amount: r.amount, currency: r.currency, fxRateToBase: r.fxRateToBase, note: r.note ?? '', linkedTicker: r.linkedTicker ?? '' })
     setRecordErrors({})
     setRecordModal(true)
   }
@@ -238,6 +241,7 @@ export function CashflowPage() {
         fxRateToBase: 1,
         note: p.note ?? '',
         accountId,
+        linkedTicker: p.linkedTicker || undefined,
       })
     }
     setImportPlanModal(false)
@@ -255,7 +259,7 @@ export function CashflowPage() {
 
   const openEditPlan = (p: MonthlyExpensePlan) => {
     setEditPlan(p)
-    setPlanForm({ type: ((p.type ?? 'expense') as MonthlyExpensePlanInput['type']), categoryId: p.categoryId, plannedAmount: p.plannedAmount, currency: p.currency, note: p.note ?? '' })
+    setPlanForm({ type: ((p.type ?? 'expense') as MonthlyExpensePlanInput['type']), categoryId: p.categoryId, plannedAmount: p.plannedAmount, currency: p.currency, note: p.note ?? '', linkedTicker: p.linkedTicker ?? '' })
     setPlanErrors({})
     setPlanModal(true)
   }
@@ -822,7 +826,7 @@ export function CashflowPage() {
           </div>
           <div className="form-group col-span-2">
             <label className="label">分類 *</label>
-            <select className="select" value={recordForm.categoryId} onChange={(e) => setRecordForm({ ...recordForm, categoryId: e.target.value })}>
+            <select className="select" value={recordForm.categoryId} onChange={(e) => setRecordForm({ ...recordForm, categoryId: e.target.value, linkedTicker: '' })}>
               <option value="">請選擇</option>
               {(recordForm.type === 'income' ? incomeCategories : expenseCategories).map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
@@ -830,6 +834,27 @@ export function CashflowPage() {
             </select>
             {recordErrors.categoryId && <span className="text-xs text-red-500">{recordErrors.categoryId}</span>}
           </div>
+          {(() => {
+            const catName = categoryMap.get(recordForm.categoryId)?.name ?? ''
+            const showTicker = catName === '基金利息' || catName === '股利'
+            if (!showTicker) return null
+            const tickerAssets = assets.filter(a => a.ticker)
+            return (
+              <div className="form-group col-span-2">
+                <label className="label">代號（對應資產管理）</label>
+                <select
+                  className="select"
+                  value={recordForm.linkedTicker ?? ''}
+                  onChange={(e) => setRecordForm({ ...recordForm, linkedTicker: e.target.value })}
+                >
+                  <option value="">不指定</option>
+                  {tickerAssets.map(a => (
+                    <option key={a.id} value={a.ticker!}>{a.ticker} — {a.name}</option>
+                  ))}
+                </select>
+              </div>
+            )
+          })()}
           <div className="form-group">
             <label className="label">金額 *</label>
             <input type="number" min="0" step="0.01" className="input" value={recordForm.amount} onChange={(e) => setRecordForm({ ...recordForm, amount: Number(e.target.value) })} />
@@ -968,12 +993,33 @@ export function CashflowPage() {
         <div className="grid grid-cols-2 gap-4">
           <div className="form-group col-span-2">
             <label className="label">分類 *</label>
-            <select className="select" value={planForm.categoryId} onChange={(e) => setPlanForm({ ...planForm, categoryId: e.target.value })}>
+            <select className="select" value={planForm.categoryId} onChange={(e) => setPlanForm({ ...planForm, categoryId: e.target.value, linkedTicker: '' })}>
               <option value="">請選擇</option>
               {(planForm.type === 'income' ? incomeCategories : expenseCategories).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
             {planErrors.categoryId && <span className="text-xs text-red-500">{planErrors.categoryId}</span>}
           </div>
+          {(() => {
+            const catName = categoryMap.get(planForm.categoryId)?.name ?? ''
+            const showTicker = catName === '基金利息' || catName === '股利'
+            if (!showTicker) return null
+            const tickerAssets = assets.filter(a => a.ticker)
+            return (
+              <div className="form-group col-span-2">
+                <label className="label">代號（對應資產管理）</label>
+                <select
+                  className="select"
+                  value={planForm.linkedTicker ?? ''}
+                  onChange={(e) => setPlanForm({ ...planForm, linkedTicker: e.target.value })}
+                >
+                  <option value="">不指定</option>
+                  {tickerAssets.map(a => (
+                    <option key={a.id} value={a.ticker!}>{a.ticker} — {a.name}</option>
+                  ))}
+                </select>
+              </div>
+            )
+          })()}
           <div className="form-group">
             <label className="label">計畫金額 *</label>
             <input type="number" min="0" step="0.01" className="input" value={planForm.plannedAmount} onChange={(e) => setPlanForm({ ...planForm, plannedAmount: Number(e.target.value) })} />
@@ -1018,7 +1064,10 @@ export function CashflowPage() {
           <div className="mb-4">
             <h4 className="text-sm font-semibold text-red-700 mb-2">固定月支出計畫</h4>
             <div className="space-y-1.5">
-              {sortedPlans.map((p) => (
+              {sortedPlans.map((p) => {
+                const catName = categoryMap.get(p.categoryId)?.name ?? '-'
+                const showTicker = (catName === '基金利息' || catName === '股利') && p.linkedTicker
+                return (
                 <label key={p.id} className="flex items-center gap-3 px-3 py-2 rounded-lg border border-gray-100 hover:bg-gray-50 cursor-pointer">
                   <input
                     type="checkbox"
@@ -1026,12 +1075,14 @@ export function CashflowPage() {
                     onChange={() => toggleImportPlan(p.id)}
                     className="w-4 h-4 rounded border-gray-300"
                   />
-                  <span className="flex-1 text-sm font-medium">{categoryMap.get(p.categoryId)?.name ?? '-'}</span>
+                  <span className="flex-1 text-sm font-medium">{catName}</span>
+                  {showTicker && <span className="text-xs px-1.5 py-0.5 bg-blue-50 rounded text-blue-600 border border-blue-200">{p.linkedTicker}</span>}
                   <span className="text-sm font-mono !text-red-500">{formatCurrency(p.plannedAmount, p.currency)}</span>
                   <span className="text-xs text-gray-400">{p.currency}</span>
                   {p.note && <span className="text-xs text-gray-400 truncate max-w-[8rem]">{p.note}</span>}
                 </label>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}
@@ -1042,6 +1093,8 @@ export function CashflowPage() {
               {sortedIncomePlans.map((p) => {
                 const cashAccs = accounts.filter(a => a.type === 'cash' && a.currency === p.currency)
                 const isSelected = importPlanSelected.has(p.id)
+                const catName = categoryMap.get(p.categoryId)?.name ?? '-'
+                const showTicker = (catName === '基金利息' || catName === '股利') && p.linkedTicker
                 return (
                   <div key={p.id} className="rounded-lg border border-gray-100">
                     <label className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer rounded-lg">
@@ -1051,7 +1104,8 @@ export function CashflowPage() {
                         onChange={() => toggleImportPlan(p.id)}
                         className="w-4 h-4 rounded border-gray-300"
                       />
-                      <span className="flex-1 text-sm font-medium">{categoryMap.get(p.categoryId)?.name ?? '-'}</span>
+                      <span className="flex-1 text-sm font-medium">{catName}</span>
+                      {showTicker && <span className="text-xs px-1.5 py-0.5 bg-blue-50 rounded text-blue-600 border border-blue-200">{p.linkedTicker}</span>}
                       <span className="text-sm font-mono !text-emerald-600">{formatCurrency(p.plannedAmount, p.currency)}</span>
                       <span className="text-xs text-gray-400">{p.currency}</span>
                       {p.note && <span className="text-xs text-gray-400 truncate max-w-[8rem]">{p.note}</span>}

@@ -87,6 +87,7 @@ export interface IncomeExpenseRecord extends BaseEntity {
   currency: Currency
   fxRateToBase: number
   note?: string
+  linkedTicker?: string
 }
 
 // ============================================================
@@ -99,6 +100,7 @@ export interface MonthlyExpensePlan extends BaseEntity {
   plannedAmount: number
   currency: Currency
   note?: string
+  linkedTicker?: string
 }
 
 // ============================================================

@@ -66,6 +66,7 @@ export const IncomeExpenseRecordSchema = BaseEntitySchema.extend({
   currency: z.enum(currencies as [string, ...string[]]),
   fxRateToBase: z.number().positive('匯率必須大於 0'),
   note: z.string().optional(),
+  linkedTicker: z.string().optional(),
 })
 
 export const MonthlyExpensePlanSchema = BaseEntitySchema.extend({
@@ -74,6 +75,7 @@ export const MonthlyExpensePlanSchema = BaseEntitySchema.extend({
   plannedAmount: z.number().min(0, '計畫金額不可為負數'),
   currency: z.enum(currencies as [string, ...string[]]),
   note: z.string().optional(),
+  linkedTicker: z.string().optional(),
 })
 
 export const CategorySchema = BaseEntitySchema.extend({

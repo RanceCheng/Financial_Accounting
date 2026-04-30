@@ -9,6 +9,7 @@ import {
   BarChart2,
   ShieldCheck,
   Landmark,
+  LineChart,
 } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 
@@ -17,6 +18,11 @@ const navItems = [
     path: '/investment',
     label: '投資紀錄表',
     icon: TrendingUp,
+  },
+  {
+    path: '/investment-analysis',
+    label: '投資績效分析',
+    icon: LineChart,
   },
   {
     path: '/rebalance',

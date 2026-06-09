@@ -8,6 +8,7 @@ import { AssetSchema, AssetInput } from '@/data/schemas'
 import { ASSET_TYPES, MARKETS, CURRENCIES, ASSET_TYPE_LABELS, MARKET_LABELS } from '@/lib/constants'
 import { Modal } from '@/components/common/Modal'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { ReconcileTransactionsButton } from './ReconcileTransactionsButton'
 import { SortTh } from '@/components/common/SortTh'
 import { useSortable, sortByKey } from '@/lib/sorting'
 import { Plus, Edit2, Trash2, RefreshCw, ExternalLink, Loader2, ChevronDown, ChevronRight } from 'lucide-react'
@@ -362,6 +363,7 @@ export function AssetManager() {
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-semibold text-gray-800">資產管理</h3>
         <div className="flex gap-2">
+          <ReconcileTransactionsButton />
           <button onClick={() => { setBulkResults([]); setBulkOpen(true) }} className="btn-secondary btn-sm flex items-center gap-1.5">
             <RefreshCw className="w-4 h-4" />
             更新股價

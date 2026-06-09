@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/data/db'
 import { InvestmentTransaction, AssetLot } from '@/data/types'
 import { investmentTxRepo, assetRepo, accountRepo } from '@/data/repositories'
+import { fetchPrice, BulkPriceResult } from '@/data/services/priceService'
 import { v4 as uuidv4 } from 'uuid'
 import { InvestmentTransactionSchema, InvestmentTransactionInput } from '@/data/schemas'
 import {
@@ -15,9 +16,10 @@ import {
 import { formatDatetime, formatNumber, formatCurrency } from '@/lib/formatters'
 import { Modal } from '@/components/common/Modal'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { ReconcileTransactionsButton } from './ReconcileTransactionsButton'
 import { SortTh } from '@/components/common/SortTh'
 import { useSortable, sortByKey } from '@/lib/sorting'
-import { Plus, Edit2, Trash2, Filter } from 'lucide-react'
+import { Plus, Edit2, Trash2, Filter, RefreshCw, CheckCircle, XCircle, AlertTriangle } from 'lucide-react'
 
 const toDatetimeLocal = (d: Date): string => {
   const p = (n: number) => String(n).padStart(2, '0')
@@ -116,6 +118,36 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [filters, setFilters] = useState<Filters>(emptyFilters())
   const [showFilters, setShowFilters] = useState(false)
+  const [priceUpdating, setPriceUpdating] = useState(false)
+  const [priceResults, setPriceResults] = useState<BulkPriceResult[] | null>(null)
+
+  const handleUpdatePrices = async () => {
+    const targets = assets.filter(a =>
+      a.assetType === 'fund' ? !!a.ticker.trim() : (a.market !== 'CASH' && a.market !== 'OTHER')
+    )
+    setPriceResults([])
+    setPriceUpdating(true)
+    const results: BulkPriceResult[] = []
+    for (const a of targets) {
+      try {
+        const price = await fetchPrice(a.ticker, a.market, a.assetType)
+        await assetRepo.update(a.id, { currentPrice: price })
+        results.push({ assetId: a.id, name: a.name, ticker: a.ticker, status: 'success', price })
+      } catch (e) {
+        results.push({
+          assetId: a.id, name: a.name, ticker: a.ticker, status: 'error',
+          message: e instanceof Error ? e.message : '未知錯誤',
+        })
+      }
+      setPriceResults([...results])
+    }
+    const targetIds = new Set(targets.map(a => a.id))
+    assets.filter(a => !targetIds.has(a.id)).forEach(a => {
+      results.push({ assetId: a.id, name: a.name, ticker: a.ticker, status: 'skip' })
+    })
+    setPriceResults([...results])
+    setPriceUpdating(false)
+  }
 
   // 篩選條件變動時通知父層（HoldingStats 同步用）
   useEffect(() => {
@@ -218,6 +250,23 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
     if (editItem) {
       await investmentTxRepo.update(editItem.id, form)
     } else {
+      // 賣出檢查：本功能不支援「做空」記錄。資產持有數量為 0 或賣出數量超出持有時，阻止新增
+      if (form.txType === 'sell') {
+        const sellAsset = assets.find(a => a.id === form.assetId)
+        const availableQty = sellAsset
+          ? (sellAsset.lots && sellAsset.lots.length > 0
+              ? sellAsset.lots.reduce((s, l) => s + (l.quantity ?? 0), 0)
+              : (sellAsset.quantity ?? 0))
+          : 0
+        if (availableQty <= 0) {
+          setErrors({ quantity: '此資產目前持有數量為 0，無法新增賣出交易。本功能不支援「做空」（無持有先賣出）記錄。' })
+          return
+        }
+        if ((form.quantity ?? 0) > availableQty) {
+          setErrors({ quantity: `賣出數量超過目前持有數量（${formatNumber(availableQty)}），本功能不支援「做空」記錄。` })
+          return
+        }
+      }
       // 該幣別無對應帳戶時阻止新增
       const matchedAccounts = accounts.filter(a => a.currency === form.currency)
       if (matchedAccounts.length === 0) {
@@ -330,11 +379,30 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
     }
   }
 
+  // 賣出時的可用持有數量（有批次則加總批次，否則用直接數量）；用於阻止「做空」
+  const sellSelAsset = form.assetId ? assets.find(a => a.id === form.assetId) : undefined
+  const sellAvailableQty = sellSelAsset
+    ? (sellSelAsset.lots && sellSelAsset.lots.length > 0
+        ? sellSelAsset.lots.reduce((s, l) => s + (l.quantity ?? 0), 0)
+        : (sellSelAsset.quantity ?? 0))
+    : 0
+  // 新增賣出但所選資產持有為 0：阻止並提示不支援做空
+  const sellBlockedZero = !editItem && form.txType === 'sell' && !!sellSelAsset && sellAvailableQty <= 0
+
   return (
     <div>
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-semibold text-gray-800">投資交易紀錄</h3>
         <div className="flex gap-2">
+          <ReconcileTransactionsButton />
+          <button
+            onClick={handleUpdatePrices}
+            disabled={priceUpdating}
+            className="btn-secondary btn-sm disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <RefreshCw className={`w-4 h-4 ${priceUpdating ? 'animate-spin' : ''}`} />
+            {priceUpdating ? '更新中…' : '更新股價'}
+          </button>
           <button
             onClick={() => setShowFilters(!showFilters)}
             className={`btn-secondary btn-sm ${showFilters ? 'bg-blue-50 border-blue-300 text-blue-600' : ''}`}
@@ -348,6 +416,40 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
           </button>
         </div>
       </div>
+
+      {/* 更新股價結果 */}
+      {priceResults !== null && (
+        <div className="card mb-4 p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-slate-700">
+              更新結果（
+              <span className="text-emerald-600">{priceResults.filter(r => r.status === 'success').length} 成功</span>
+              {priceResults.filter(r => r.status === 'error').length > 0 && (
+                <span>、<span className="text-red-600">{priceResults.filter(r => r.status === 'error').length} 失敗</span></span>
+              )}
+              ）
+            </p>
+            {!priceUpdating && (
+              <button onClick={() => setPriceResults(null)} className="text-xs text-slate-400 hover:text-slate-600">關閉</button>
+            )}
+          </div>
+          <div className="max-h-40 overflow-y-auto divide-y divide-slate-100">
+            {priceResults.filter(r => r.status !== 'skip').map(r => (
+              <div key={r.assetId} className="flex items-center gap-2 py-1.5 text-xs">
+                {r.status === 'success' && <CheckCircle className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                {r.status === 'error'   && <XCircle    className="w-3.5 h-3.5 text-red-500    shrink-0" />}
+                <span className="text-slate-600 min-w-[6rem] truncate">{r.name}</span>
+                <span className="text-slate-400 font-mono">{r.ticker}</span>
+                {r.status === 'success' && <span className="ml-auto font-mono text-slate-700">{r.price}</span>}
+                {r.status === 'error'   && <span className="ml-auto text-red-500 truncate max-w-[16rem]">{r.message}</span>}
+              </div>
+            ))}
+            {priceUpdating && (
+              <div className="py-2 text-xs text-slate-400 text-center">取得中，請稍候…</div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       {showFilters && (
@@ -486,6 +588,12 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
       {/* Add/Edit Modal */}
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={editItem ? '編輯交易' : '新增交易'} size="lg">
         <div className="grid grid-cols-2 gap-4">
+          {sellBlockedZero && (
+            <div className="col-span-2 flex items-start gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>此資產目前持有數量為 0，無法新增賣出交易。本功能不支援「做空」（無持有先賣出）記錄。</span>
+            </div>
+          )}
           <div className="form-group">
             <label className="label">日期 *</label>
             <input type="datetime-local" step="1" className="input" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
@@ -624,7 +732,12 @@ export function TransactionList({ onFiltersChange }: { onFiltersChange?: (f: TxF
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <button onClick={() => setModalOpen(false)} className="btn-secondary">取消</button>
-          <button onClick={handleSave} className="btn-primary">儲存</button>
+          <button
+            onClick={handleSave}
+            disabled={sellBlockedZero}
+            className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+            title={sellBlockedZero ? '資產持有數量為 0，不支援做空' : undefined}
+          >儲存</button>
         </div>
       </Modal>
 
